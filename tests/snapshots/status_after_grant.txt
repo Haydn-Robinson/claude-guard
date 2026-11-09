@@ -1,0 +1,33 @@
+Project: <TMP>/proj
+
+User settings: <TMP>/home/.claude/settings.json  [file not present]
+  (no grants managed by claude-guard)
+
+Local settings: <TMP>/proj/.claude/settings.local.json
+  <TMP>/My Projects/Sample Project   profiles: edit, git-safe
+    protected: .private/**
+    permissions.allow: Edit(/<TMP>/My Projects/Sample Project/**)
+    sandbox.filesystem.allowWrite: <TMP>/My Projects/Sample Project
+    permissions.allow: Bash(mkdir *)
+    permissions.allow: Bash(touch *)
+    permissions.allow: Bash(cp *)
+    permissions.allow: Bash(mv *)
+    permissions.allow: Bash(git status *)
+    permissions.allow: Bash(git diff *)
+    permissions.allow: Bash(git log *)
+    permissions.allow: Bash(git add *)
+    permissions.allow: Bash(git commit *)
+    permissions.allow: Bash(git restore *)
+    permissions.allow: Bash(git revert *)
+    permissions.allow: Bash(git show *)
+    permissions.deny: Edit(/<TMP>/My Projects/Sample Project/.private/**)
+    permissions.deny: Edit(/<TMP>/proj/.claude/settings.local.json) (shared)
+    permissions.deny: Edit(/<TMP>/state/**) (shared)
+  (global)   profiles: secrets
+    permissions.deny: Read(~/.ssh/**)
+    permissions.deny: Read(~/.aws/**)
+    permissions.deny: Read(//**/.env)
+    permissions.deny: Edit(/<TMP>/proj/.claude/settings.local.json) (shared)
+    permissions.deny: Edit(/<TMP>/state/**) (shared)
+  unmanaged permissions.allow:
+    Bash(curl *)
