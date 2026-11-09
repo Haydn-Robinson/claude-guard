@@ -1,7 +1,7 @@
 [project]
 name = "claude-guard"
 version = "0.1.0"
-description = "Grant, inspect and revoke Claude Code write access to folders via named profiles."
+description = "Keep Claude Code's writes where they belong: one policy file compiled into Claude Code settings, plus an Edit/Write hook."
 readme = "README.md"
 authors = [
     { name = "Haydn Robinson", email = "haydn.robinson96@gmail.com" }

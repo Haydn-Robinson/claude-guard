@@ -20,14 +20,6 @@ class SettingsError(GuardError):
     """A Claude Code settings file is malformed or has an unexpected shape."""
 
 
-class ProfileError(GuardError):
-    """A profile definition is invalid or unknown."""
-
-
-class StateError(GuardError):
-    """The state file is malformed or inconsistent."""
-
-
 class PolicyError(GuardError):
     """policy.toml is invalid: bad syntax, unknown keys or values, unsafe paths."""
 

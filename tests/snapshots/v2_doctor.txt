@@ -1,0 +1,13 @@
+[ok]   bwrap installed
+[ok]   socat installed
+[ok]   policy: <TMP>/home/.config/claude-guard/policy.toml is valid and compiles
+[ok]   settings JSON valid: user
+[ok]   sandbox.enabled = true: from user settings
+[ok]   sandbox.allowUnsandboxedCommands = false: from user settings
+[ok]   permissions.disableBypassPermissionsMode = "disable": from user settings
+[ok]   bypass requests: fall back to your default mode silently, with no warning
+[ok]   Edit/Write hook: registered, fail-closed: <TMP>/opt/bin/guard
+[ok]   scripts that settings run: <TMP>/opt/bin/guard (protected, ceiling ask)
+[ok]   settings match the policy
+
+0 failure(s), 0 warning(s)

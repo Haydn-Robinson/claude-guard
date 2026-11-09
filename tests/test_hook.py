@@ -1,7 +1,4 @@
-"""The PreToolUse hook for the Edit/Write tools (`guard hook edit`) and its settings entry.
-
-Phase 0b facts this relies on: the hook runs in auto mode, `ask` prompts, `deny` blocks, and with
-``onFailure: "block"`` a crash blocks (without it a crash lets the write through)."""
+"""The v2 Edit/Write hook: a decision table over applied hook data (design section 8)."""
 
 from __future__ import annotations
 
@@ -10,225 +7,237 @@ from pathlib import Path
 
 import pytest
 
-from claude_guard.engine import Guard
-from claude_guard.errors import GuardError
-from claude_guard.hook import Decision, decide, glob_match
-from claude_guard.state import load_state
-
-
-def allow(g: Guard, folder, profiles, settings: Path, **kw):
-    plan = g.plan_allow(folder, profiles, settings, **kw)
-    g.commit(plan)
-    return plan
-
-
-def read(p: Path) -> dict:
-    return json.loads(p.read_text())
-
-
-def payload(path: str | None, cwd: Path, tool: str = "Write", key: str = "file_path") -> dict:
-    ti = {} if path is None else {key: path}
-    return {"tool_name": tool, "tool_input": ti, "cwd": str(cwd), "permission_mode": "auto"}
-
-
-def run(g: Guard, home: Path, pl: dict, unlisted: str = "ask") -> Decision | None:
-    return decide(pl, load_state(g.state_file), home, unlisted)
+from claude_guard.applied import Applied, save_applied
+from claude_guard.compile import compile_policy
+from claude_guard.hook import decide, run_hook
+from claude_guard.model import Platform
+from claude_guard.policy import parse_policy, resolve
 
 
 @pytest.fixture
-def granted(guard: Guard, target: Path, settings: Path) -> Path:
-    allow(guard, target, ["edit-ask"], settings, protect=[".private/**", "archive/**"])
-    return target
+def world(tmp_path: Path):
+    home = tmp_path / "home"
+    proj = home / "repos" / "p"
+    (proj / ".git").mkdir(parents=True)
+    (proj / "sub").mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    plat = Platform(home=home, guard_home=home / ".config" / "claude-guard", hook_command=("/g",))
+    return home, proj, out, plat
 
 
-# ---- decisions ---------------------------------------------------------------------------------
+def data_for(text: str, plat: Platform) -> dict:
+    return compile_policy(resolve(parse_policy("version = 1\n" + text), plat), plat).hook
 
 
-def test_inside_project_is_left_alone(guard, home, proj, granted):
-    assert run(guard, home, payload(str(proj / "src" / "a.py"), proj)) is None
+def call(data, path, tool="Write", project=None, cwd=None):
+    key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+    payload = {"tool_name": tool, "tool_input": {key: str(path)} if path is not None else {}}
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
+    d = decide(payload, data, str(project) if project else None)
+    return d.action if d else None
 
 
-def test_inside_granted_folder_is_left_alone(guard, home, proj, granted):
-    assert run(guard, home, payload(str(granted / "note.md"), proj)) is None
+BASE = '[everywhere]\nclosed = "ask"\n'
 
 
-def test_outside_everything_asks_by_default(guard, home, proj, granted, tmp_path):
-    d = run(guard, home, payload(str(tmp_path / "elsewhere" / "x.txt"), proj))
-    assert d == Decision("ask", d.reason) and "guard allow" in d.reason
+def test_no_path_denied(world):
+    *_, plat = world
+    assert call(data_for(BASE, plat), None) == "deny"
 
 
-def test_strict_denies_outside(guard, home, proj, granted, tmp_path):
-    d = run(guard, home, payload(str(tmp_path / "elsewhere" / "x.txt"), proj), "deny")
-    assert d is not None and d.action == "deny"
+def test_project_is_open_and_outside_is_closed(world):
+    _home, proj, out, plat = world
+    data = data_for(BASE, plat)
+    assert call(data, proj / "a.txt", project=proj) is None
+    assert call(data, out / "a.txt", project=proj) == "ask"
+    strict = data_for('[everywhere]\nclosed = "deny"\n', plat)
+    assert call(strict, out / "a.txt", project=proj) == "deny"
 
 
-def test_sibling_with_same_prefix_is_outside(guard, home, proj, granted):
-    d = run(guard, home, payload(str(granted) + "-evil/x.txt", proj))
-    assert d is not None and d.action == "ask"
+def test_started_in_a_subfolder_uses_the_git_root(world):
+    """CLAUDE_PROJECT_DIR is the launch folder (VB-H7); the repo root's settings apply (VB-P5)."""
+    _home, proj, _out, plat = world
+    assert call(data_for(BASE, plat), proj / "x.txt", project=proj / "sub") is None
 
 
-def test_dotdot_traversal_is_outside(guard, home, proj, granted):
-    d = run(guard, home, payload(str(granted / ".." / "other" / "x.txt"), proj))
-    assert d is not None and d.action == "ask"
-
-
-def test_symlink_escaping_the_folder_is_outside(guard, home, proj, granted, tmp_path):
-    target = tmp_path / "target"
-    target.mkdir()
-    (granted / "link").symlink_to(target)
-    d = run(guard, home, payload(str(granted / "link" / "x.txt"), proj))
-    assert d is not None and d.action == "ask"
-
-
-def test_protected_path_inside_granted_folder_is_denied(guard, home, proj, granted):
-    for rel in (".private/app.json", "archive/book.md"):
-        d = run(guard, home, payload(str(granted / rel), proj))
-        assert d is not None and d.action == "deny" and "protect" in d.reason.lower()
-
-
-def test_protected_wins_even_in_ask_mode_outside_project(guard, home, proj, granted):
-    d = run(guard, home, payload(str(granted / ".private" / "x"), proj), "ask")
-    assert d is not None and d.action == "deny"
-
-
-def test_floor_paths_are_denied(guard, home, proj, settings):
-    allow(guard, None, ["floor"], settings)
-    d = run(guard, home, payload(str(home / ".bashrc"), proj))
-    assert d is not None and d.action == "deny"
-    d = run(guard, home, payload(str(home / ".ssh" / "authorized_keys"), proj))
-    assert d is not None and d.action == "deny"
-
-
-def test_managed_settings_and_state_are_denied(guard, home, proj, granted, settings):
-    for p in (settings, guard.state_dir / "state.json"):
-        d = run(guard, home, payload(str(p), proj))
-        assert d is not None and d.action == "deny"
-
-
-def test_grant_in_another_projects_settings_is_not_active(guard, home, proj, tmp_path, target):
-    other = tmp_path / "other"
-    (other / ".claude").mkdir(parents=True)
-    allow(guard, target, ["edit-ask"], other / ".claude" / "settings.local.json")
-    # a session in `proj` is not governed by other's grants: the target is just "outside"
-    d = run(guard, home, payload(str(target / "n.md"), proj))
-    assert d is not None and d.action == "ask"
-    # but a session in `other` is
-    assert run(guard, home, payload(str(target / "n.md"), other)) is None
-
-
-def test_user_scope_grant_is_active_everywhere(guard, home, proj, tmp_path, target):
-    (home / ".claude").mkdir()
-    allow(guard, target, ["edit-ask"], home / ".claude" / "settings.json")
-    assert run(guard, home, payload(str(target / "n.md"), tmp_path)) is None
-
-
-def test_relative_path_resolves_against_cwd(guard, home, proj, granted):
-    assert run(guard, home, payload("src/a.py", proj)) is None
-    d = run(guard, home, payload("../outside.txt", proj))
-    assert d is not None and d.action == "ask"
-
-
-def test_notebook_path_is_checked(guard, home, proj, granted, tmp_path):
-    pl = payload(str(tmp_path / "e" / "n.ipynb"), proj, "NotebookEdit", "notebook_path")
-    d = run(guard, home, pl)
-    assert d is not None and d.action == "ask"
-
-
-def test_missing_path_is_denied(guard, home, proj, granted):
-    d = run(guard, home, payload(None, proj))
-    assert d is not None and d.action == "deny"
-
-
-def test_other_tools_are_not_our_business(guard, home, proj, granted):
-    pl = {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": str(proj)}
-    assert run(guard, home, pl) is None
-
-
-def test_empty_state_still_asks_outside_project(guard, home, proj, tmp_path):
-    d = run(guard, home, payload(str(tmp_path / "x" / "y"), proj))
-    assert d is not None and d.action == "ask"
-
-
-# ---- glob matching -----------------------------------------------------------------------------
+def test_home_is_never_a_project(world):
+    home, _proj, _out, plat = world
+    assert call(data_for(BASE, plat), home / "notes.txt", project=home) == "ask"
 
 
 @pytest.mark.parametrize(
-    ("pat", "path", "ok"),
+    ("access", "tool", "expected"),
     [
-        ("/a/b/**", "/a/b/c", True),
-        ("/a/b/**", "/a/b/c/d/e", True),
-        ("/a/b/**", "/a/bc/d", False),
-        ("/a/*", "/a/x", True),
-        ("/a/*", "/a/x/y", False),
-        ("/a/**/z", "/a/z", True),
-        ("/a/**/z", "/a/b/c/z", True),
-        ("/a/?", "/a/x", True),
-        ("/a/?", "/a/xy", False),
-        ("/a/.bashrc", "/a/.bashrc", True),
-        ("/a/.bashrc", "/a/xbashrc", False),
-        ("/a/(x)+[y]/**", "/a/(x)+[y]/f", True),
-        ("/a b/c d/**", "/a b/c d/e", True),
-        ("/mnt/d/V/.private/**", "/mnt/d/v/.PRIVATE/x", True),  # Windows drives: case-insensitive
-        ("/home/V/.private/**", "/home/v/.private/x", False),  # Linux paths: case-sensitive
+        ("full", "Write", None),
+        ("edit", "Write", None),
+        ("ask", "Write", None),  # the ask rule prompts; the hook adds nothing
+        ("bash", "Write", "ask"),  # file tools stay closed
+        ("modify", "Edit", None),
+        ("modify", "NotebookEdit", None),
+        ("modify", "Write", "deny"),  # VB-H8
+        ("deny", "Write", "deny"),
     ],
 )
-def test_glob_match(pat: str, path: str, ok: bool):
-    assert glob_match(pat, path) is ok
+def test_access_levels(world, access, tool, expected):
+    _home, proj, out, plat = world
+    data = data_for(BASE + f'write = [{{ path = "{out}", access = "{access}" }}]\n', plat)
+    assert call(data, out / "f.txt", tool=tool, project=proj) == expected
 
 
-# ---- the settings entry ------------------------------------------------------------------------
+def test_most_specific_grant_wins(world):
+    _home, proj, out, plat = world
+    (out / "cfg").mkdir()
+    data = data_for(
+        BASE + f'write = [{{ path = "{out}", access = "full" }}, '
+        f'{{ path = "{out}/cfg", access = "modify" }}]\n',
+        plat,
+    )
+    assert call(data, out / "f.txt", project=proj) is None
+    assert call(data, out / "cfg" / "f.txt", project=proj) == "deny"
+    assert call(data, out / "cfg" / "f.txt", tool="Edit", project=proj) is None
 
 
-def hooks(settings: Path) -> list:
-    return read(settings)["hooks"]["PreToolUse"]
+def test_protect_glob_denied(world):
+    _home, proj, out, plat = world
+    data = data_for(
+        BASE
+        + f'write = [{{ path = "{out}", access = "full", protect = ["*.lock", "keep/**"] }}]\n',
+        plat,
+    )
+    assert call(data, out / "a.lock", project=proj) == "deny"
+    assert call(data, out / "keep" / "x" / "y", project=proj) == "deny"
+    assert call(data, out / "sub" / "a.lock", project=proj) is None  # * stays in one segment
 
 
-def test_confine_edits_registers_fail_closed_hook(guard: Guard, settings: Path):
-    allow(guard, None, ["confine-edits"], settings)
-    (entry,) = hooks(settings)
-    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
-    (h,) = entry["hooks"]
-    assert h["type"] == "command" and h["command"] == "/opt/guard/bin/guard"
-    assert h["onFailure"] == "block"
-    assert h["args"][:2] == ["hook", "edit"]
-    assert h["args"][h["args"].index("--state-dir") + 1] == str(guard.state_dir)
-    assert h["args"][h["args"].index("--unlisted") + 1] == "ask"
+def test_locked_paths_denied_even_in_the_project(world):
+    _home, proj, _out, plat = world
+    data = data_for(BASE + 'locked = ["**/.claude/settings.json", "{guard_home}/"]\n', plat)
+    assert call(data, proj / ".claude" / "settings.json", project=proj) == "deny"
+    assert call(data, plat.guard_home / "policy.toml", project=proj) == "deny"
+    assert call(data, proj / ".claude" / "skills" / "s.md", project=proj) is None  # VB-E9
 
 
-def test_strict_profile_registers_deny(guard: Guard, settings: Path):
-    allow(guard, None, ["confine-edits-strict"], settings)
-    (h,) = hooks(settings)[0]["hooks"]
-    assert h["args"][h["args"].index("--unlisted") + 1] == "deny"
+def test_protected_paths(world):
+    home, proj, out, plat = world
+    (home / ".ssh").mkdir()
+    data = data_for(
+        BASE + f'protected = [{{ path = "~/.ssh", ceiling = "ask" }}, '
+        f'{{ path = "{proj}/scripts", ceiling = "ask" }}, {{ path = "{out}/win", ceiling = "deny" }}]\n',
+        plat,
+    )
+    assert call(data, home / ".ssh" / "config", project=proj) == "deny"  # outside the project
+    assert call(data, proj / "scripts" / "run.sh", project=proj) == "ask"  # inside it
+    assert call(data, out / "win" / "x", project=proj) == "deny"
 
 
-def test_hook_grant_is_idempotent_and_revocable(guard: Guard, settings: Path):
-    allow(guard, None, ["confine-edits"], settings)
-    assert guard.plan_allow(None, ["confine-edits"], settings).noop
-    guard.commit(guard.plan_revoke(None, settings))
-    assert not settings.exists()
+def test_parent_grant_does_not_open_a_protected_path(world):
+    _home, proj, out, plat = world
+    data = data_for(
+        BASE + f'write = [{{ path = "{out}", access = "full" }}]\n'
+        f'protected = [{{ path = "{out}/scripts", ceiling = "ask" }}]\n',
+        plat,
+    )
+    assert call(data, out / "a.txt", project=proj) is None
+    assert call(data, out / "scripts" / "a.sh", project=proj) == "deny"
 
 
-def test_revoke_leaves_other_hooks_and_restores_bytes(guard: Guard, settings: Path):
-    mine = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/x/audit"}]}
-    original = json.dumps({"hooks": {"PreToolUse": [mine]}}, indent=2) + "\n"
-    settings.write_text(original)
-    allow(guard, None, ["confine-edits"], settings)
-    assert hooks(settings)[0] == mine and len(hooks(settings)) == 2
-    guard.commit(guard.plan_revoke(None, settings))
-    assert settings.read_text() == original
+def test_grant_naming_a_protected_path_opens_it(world):
+    _home, proj, out, plat = world
+    data = data_for(
+        BASE + f'write = [{{ path = "{out}/scripts", access = "ask" }}]\n'
+        f'protected = [{{ path = "{out}/scripts", ceiling = "ask" }}]\n',
+        plat,
+    )
+    assert call(data, out / "scripts" / "a.sh", project=proj) is None  # the ask rule prompts
 
 
-def test_hook_needs_a_command(guard: Guard, settings: Path, policy):
-    g = Guard(guard.state_dir, guard.profiles, policy)  # no hook_command
-    with pytest.raises(GuardError, match="hook"):
-        g.plan_allow(None, ["confine-edits"], settings)
+def test_project_grants_apply_only_in_that_project(world, tmp_path: Path):
+    home, proj, out, plat = world
+    other = home / "repos" / "q"
+    (other / ".git").mkdir(parents=True)
+    data = data_for(
+        BASE + f'[projects."{proj}"]\nwrite = [{{ path = "{out}", access = "full" }}]\n', plat
+    )
+    assert call(data, out / "a", project=proj) is None
+    assert call(data, out / "a", project=proj / "sub") is None
+    assert call(data, out / "a", project=other) == "ask"
 
 
-def test_hook_entries_do_not_break_key_ordering(guard: Guard, settings: Path):
-    # same logical entry with a different key order must be recognised as already present
-    allow(guard, None, ["confine-edits"], settings)
-    data = read(settings)
-    entry = data["hooks"]["PreToolUse"][0]
-    data["hooks"]["PreToolUse"][0] = dict(reversed(list(entry.items())))
-    settings.write_text(json.dumps(data, indent=2) + "\n")
-    assert guard.plan_allow(None, ["confine-edits"], settings).noop
+def test_project_closed_mode_overrides(world):
+    _home, proj, out, plat = world
+    data = data_for(BASE + f'[projects."{proj}"]\nclosed = "deny"\n', plat)
+    assert call(data, out / "a", project=proj) == "deny"
+
+
+def test_symlink_out_of_the_project_counts_as_outside(world):
+    _home, proj, out, plat = world
+    (proj / "link").symlink_to(out)
+    assert call(data_for(BASE, plat), proj / "link" / "f.txt", project=proj) == "ask"
+
+
+def test_relative_path_resolved_against_cwd(world):
+    _home, proj, _out, plat = world
+    assert call(data_for(BASE, plat), "../../../out/x", project=proj, cwd=proj / "sub") == "ask"
+    assert call(data_for(BASE, plat), "x.txt", project=proj, cwd=proj / "sub") is None
+
+
+def test_windows_drive_paths_match_case_insensitively(world):
+    """VB-U12: drvfs is case-insensitive; matching errs towards the grant's protection."""
+    home, proj, _out, _plat = world
+    data = {
+        "home": str(home),
+        "scopes": {
+            "*": {
+                "closed": "ask",
+                "grants": [{"path": "/mnt/z/Data/Proj", "access": "modify", "protect": []}],
+                "protected": [],
+                "locked": [],
+            }
+        },
+    }
+    assert call(data, "/mnt/z/data/PROJ/f.txt", project=proj) == "deny"
+
+
+# ---- run_hook: the process interface ---------------------------------------------------------
+
+
+def test_run_hook_output_and_log(world, monkeypatch):
+    _home, proj, out, plat = world
+    save_applied(plat.guard_home, Applied(hook=data_for(BASE, plat)))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(out / "x")}, "cwd": str(proj)}
+    text = run_hook(json.dumps(payload), plat.guard_home)
+    out_json = json.loads(text)["hookSpecificOutput"]  # VB-H2
+    assert out_json["hookEventName"] == "PreToolUse"
+    assert out_json["permissionDecision"] == "ask"
+    assert str(out / "x") in out_json["permissionDecisionReason"]
+    payload["tool_input"]["file_path"] = str(proj / "x")
+    assert run_hook(json.dumps(payload), plat.guard_home) == ""
+    log = (plat.guard_home / "hook.log").read_text().splitlines()
+    assert len(log) == 2 and "ask" in log[0] and "pass" in log[1]
+
+
+def test_run_hook_without_applied_policy_asks(world, monkeypatch):
+    _home, proj, _out, plat = world
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(proj / "x")}}
+    decision = json.loads(run_hook(json.dumps(payload), plat.guard_home))
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_run_hook_bad_input_raises(world):
+    """A crash blocks the write: the hook is registered with onFailure: block (VB-H3)."""
+    *_, plat = world
+    with pytest.raises(ValueError):
+        run_hook("not json", plat.guard_home)
+    with pytest.raises(TypeError):
+        run_hook("[1]", plat.guard_home)
+
+
+def test_a_sibling_with_a_common_prefix_is_not_inside(world):
+    _home, proj, out, plat = world
+    sibling = out.parent / (out.name + "2")
+    data = data_for(BASE + f'write = [{{ path = "{out}", access = "full" }}]\n', plat)
+    assert call(data, sibling / "f.txt", project=proj) == "ask"

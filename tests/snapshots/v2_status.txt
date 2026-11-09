@@ -1,0 +1,33 @@
+Policy: <TMP>/home/.config/claude-guard/policy.toml
+Project here: <TMP>/home/repos/proj
+Settings match the policy.
+
+[everywhere]  -> <TMP>/home/.claude/settings.json
+  elsewhere: the Edit/Write tools ask; Bash is read-only
+  protected (ceiling):
+    ask     /etc
+    ask     <TMP>/home/.ssh
+    ask     <TMP>/home/.aws
+    ask     <TMP>/home/.gnupg
+    ask     <TMP>/home/.bashrc
+    ask     <TMP>/home/.bash_profile
+    ask     <TMP>/home/.profile
+    ask     <TMP>/home/.zshrc
+    ask     <TMP>/home/.zprofile
+    ask     <TMP>/home/.zshenv
+    ask     <TMP>/opt/bin/guard
+  locked:
+    <TMP>/home/.claude/settings.json
+    <TMP>/home/.claude/settings.local.json
+    <TMP>/home/.claude.json
+    **/.claude/settings.json
+    **/.claude/settings.local.json
+    **/.mcp.json
+    <TMP>/etc/claude-code/
+    <TMP>/home/.config/claude-guard/
+
+[projects."<TMP>/home/repos/proj"]  -> <TMP>/home/repos/proj/.claude/settings.local.json
+  elsewhere: the Edit/Write tools ask; Bash is read-only
+  grants:
+    edit    <TMP>/data  (protect: *.lock)
+            Edit/Write, no prompt; Bash read-only (no delete or rename)

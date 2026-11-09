@@ -9,6 +9,7 @@ Two path conventions (VB-R4):
 
 from __future__ import annotations
 
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -87,3 +88,27 @@ def glob_matches(pattern: str, path: Path) -> bool:
 def is_within(path: Path, folder: Path) -> bool:
     """``path`` is ``folder`` or inside it."""
     return path == folder or folder in path.parents
+
+
+def find_project(cwd: Path, home: Path) -> Path | None:
+    """The git root containing ``cwd``, or ``cwd`` itself outside a repository. A folder at or
+    above the home folder is no project (design 7.1, 8)."""
+    here = Path(os.path.realpath(cwd))
+    root = next((d for d in (here, *here.parents) if (d / ".git").exists()), here)
+    if is_within(Path(os.path.realpath(home)), root):
+        return None
+    return root
+
+
+def bash_match(spec: str, command: str) -> bool:
+    """Match a ``Bash(spec)`` pattern against a command. ``cmd *`` also matches bare ``cmd``
+    (VB-R1); a rule without ``*`` matches only the exact command (VB-R2)."""
+    spec = spec.strip()
+    if spec.endswith(":*"):
+        spec = spec[:-2] + " *"
+    trailing = spec.endswith(" *")
+    body = spec[:-2] if trailing else spec
+    rx = ".*".join(re.escape(part) for part in body.split("*"))
+    if trailing:
+        rx += "(?: .*)?"
+    return re.fullmatch(rx, command.strip(), re.DOTALL) is not None

@@ -1,6 +1,6 @@
 # claude-guard v2: design
 
-Status: **approved; being built**, updated with the phase 2 verification results (`phase2_results.md`, 2026-11-09). Built so far (phase 3, the core): `model`, `policy` (parse, resolve, format-preserving edits), `presets.toml`, `rules`, `pathsafety`, `compile`, `applied`, `apply`. Not yet: platform detection (caches, settings scripts), `effective`, `proposals`, the v2 hook, views and CLI. Facts about Claude Code are cited by ID from `verified-behaviour.md`; anything not yet verified is called out as such.
+Status: **built** (2026-11-09). Updated with the phase 2 verification results (`phase2_results.md`). The README is the user guide; this document records the design and the reasons for it.
 
 ## 1. Purpose
 
@@ -255,7 +255,7 @@ The matcher stays `Write|Edit|MultiEdit|NotebookEdit`: NotebookEdit reaches the 
 
 There are many good reasons to have Claude help with settings besides permissions: hooks, environment variables, the model, the status line, MCP servers, plugins, output style, sandbox network settings. But most of these can weaken the guardrails: a hook or `apiKeyHelper` runs a command outside the sandbox, an `env` entry changes how tools behave. So settings files are **locked**, and Claude never gets write access to them. Instead:
 
-1. **Claude proposes.** It runs `guard propose`, for example `guard propose ~/.claude/settings.json --set statusLine.command='~/bin/status.sh' --reason "show git branch"`. The proposal is a list of operations (set or remove a key, add or remove an array item) on one target file, plus the reason. `guard propose` validates it and saves it under `$TMPDIR`, which the sandbox lets Claude write to (VB-S4; `/tmp` itself is read-only), then prints: "ask the user to run `guard review` in a separate terminal". A shipped skill tells Claude to use this instead of editing settings.
+1. **Claude proposes.** It runs `guard propose`, for example `guard propose ~/.claude/settings.json --set statusLine.command='~/bin/status.sh' --reason "show git branch"`. The proposal is a list of operations on one target file (`--set KEY=VALUE`, `--unset KEY`, `--add KEY=VALUE`, `--remove KEY=VALUE`, kept in command-line order; VALUE is JSON when it parses, else a string), plus the reason. `guard propose` validates it and saves it under `$TMPDIR`, which the sandbox lets Claude write to (VB-S4; `/tmp` itself is read-only), then prints: "ask the user to run `guard review` in a separate terminal". A shipped skill tells Claude to use this instead of editing settings.
 2. **You review, in a separate terminal.** `guard review` applies the operations to the file *as it is now* (so a proposal never overwrites changes made since), and shows:
    - the diff;
    - each security-relevant change in plain English: hooks, `apiKeyHelper`, `statusLine` commands, `env`, `permissions`, `sandbox`, MCP servers, plugins, `defaultMode`. For example: "adds a hook that runs `./x.sh` before every Bash command, outside the sandbox";
@@ -341,8 +341,11 @@ apply.py       plan (diff) and commit
 effective.py   read every Claude Code settings source in precedence order
 proposals.py   propose / review: operations, security annotations, apply one proposal
 hook.py        decide(payload, applied) -> decision; light imports for speed
+machine.py     platform facts: drives, caches, settings scripts, hook command
+context.py     the pipeline shared by CLI and views: policy -> platform -> compiled
 views/         status, explain, doctor: data builders separate from renderers
-cli.py         argparse wiring only
+cli.py         argparse wiring and the confirm-and-apply flow
+skills/        a Claude skill: ask for grants, propose settings changes
 ```
 
 Dependencies point one way: `model` ← `rules` ← `compile` ← `apply` ← `cli`. The hook depends only on `model`, `rules` and `applied`. Code that depends on a Claude Code behaviour cites its `VB` ID.

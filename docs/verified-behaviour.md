@@ -38,7 +38,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** `sandbox.filesystem.allowWrite` entries work as plain absolute paths, paths containing spaces, `//abs`, `~/x`, `/mnt/c/Users/...`, `/mnt/d/...` and WSL home paths. Writes and `rm` inside such a folder succeed.
 **Evidence:** A steps 1, 2, 4, 5, 7; D; F steps 1 to 4.
-**Relied on by:** `paths.sandbox_path` (emits plain absolute paths); `engine._wants`.
+**Relied on by:** `rules.sandbox_path` (plain absolute paths); `compile` (`bash` access, `raw.sandbox.allow_write`).
 **Re-check:** `phase0-sandbox-tests.md` session A.
 
 ### VB-S2 Everything outside the allowed set is read-only to Bash, enforced by the kernel
@@ -76,33 +76,33 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** An `Edit` allow rule on a folder gives Bash write access there with no `allowWrite` entry. An `Edit` deny rule on a sub-path makes Bash writes there fail (`Read-only file system`). This holds for `//abs` and `~/` paths; it does **not** hold for `//**/` glob patterns (VB-S14).
 **Evidence:** B steps 1, 2 (allow); B step 5 (deny; steps 3 and 4 were stopped earlier by the classifier, VB-C1); P2-B2 step 1 (`~/` form).
-**Relied on by:** `--protect` (emits only an `Edit` deny); the `edit` profile; `explain` ("Edit deny rules also become denyWrite").
+**Relied on by:** `compile`: `full` is a single `Edit` allow, `deny` and ceiling-`deny` paths a single `Edit` deny, and `protect` globs on concrete paths need nothing else; `views/explain` (allow and deny rules on concrete paths count for Bash).
 **Re-check:** session B.
 
 ### VB-S8 `denyWrite` wins over any allow, with no sub-path exception
 **Status:** VERIFIED
 **Fact:** With an `Edit` allow on a folder, `denyWrite` on the folder and `allowWrite` on `folder/.git`, Bash can write nowhere in the folder, including `.git`. The more specific allow does not override the deny. `git add` and `git commit` fail with `index.lock: Read-only file system`; `git clean`, `rm`, `mv` and `>` fail too. `git status` works.
 **Evidence:** T1a and T1b (identical results); P2-F (an `Edit` allow plus `denyWrite` on a `/mnt/c` folder, set from a project-local file: the Edit/Write tools created and edited files, Bash write and `mv` failed with `Read-only file system`).
-**Relied on by:** the design's `edit` access level; `sandbox_deny_write`, profiles `bash-readonly` and `edit-ask`, and the git warning in `engine._conflicts`. Consequence: a Bash-read-only folder cannot be committed to from inside Claude.
+**Relied on by:** the access levels `edit`, `modify` and `ask` (`compile._grant_entries`); the nested-grant conflict check (`compile._nested_conflict`). Consequence: a Bash-read-only folder cannot be committed to from inside Claude.
 **Re-check:** T1.
 
 ### VB-S9 The two `denyWrite` spellings behave the same
 **Status:** VERIFIED
 **Fact:** `denyWrite: ["<folder>"]` and `["<folder>/**"]` both make the whole folder read-only to Bash.
 **Evidence:** T1a vs T1b.
-**Relied on by:** `engine` emits the plain folder form.
+**Relied on by:** `compile` emits the plain folder form.
 
 ### VB-S10 The Edit and Write tools are not sandboxed
 **Status:** VERIFIED
 **Fact:** `allowWrite`/`denyWrite` do not affect the Edit and Write tools: they write into a `denyWrite` folder and into a folder outside every `allowWrite`.
 **Evidence:** A step 10; F step 8; T1a/T1b steps 5, 6.
-**Relied on by:** the README gap section; `confine-edits`; `edit-ask`.
+**Relied on by:** the hook exists because of it (`hook.py`); the `ask` access level.
 
 ### VB-S11 Sandboxed Bash with literal paths is not prompted
 **Status:** VERIFIED (behaviour); the setting name and default are DOCUMENTED
 **Fact:** In default and acceptEdits mode, sandboxed `echo > file` and `rm` on literal paths inside allowed folders run with no prompt. `sandbox.autoAllowBashIfSandboxed` (default true) is the documented reason; we did not toggle it.
 **Evidence:** F (literal paths). D's prompts all came from `$VAR` targets (VB-S12), not from the sandbox.
-**Relied on by:** why `delete`/`delete-recursive` profiles were removed (they granted nothing); `confirm-destructive` (an ask rule is what makes `rm` prompt).
+**Relied on by:** `full` needs no Bash allow rules; `confirm-destructive` (an ask rule is what makes `rm` prompt).
 
 ### VB-S12 `$VAR` in a redirect target triggers a parser prompt unrelated to the sandbox
 **Status:** VERIFIED
@@ -114,7 +114,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** A `Read(~/...)` deny rule makes the path invisible to Bash: `cat` reports `No such file or directory` although the file exists. This error is even less obviously a sandbox effect than `Read-only file system` (VB-S3).
 **Evidence:** P2-B2 step 2 (file confirmed present on disk afterwards).
-**Relied on by:** secrets protection for `~/` paths; `explain` should mention that a read deny shows up as "No such file or directory".
+**Relied on by:** secrets protection for `~/` paths (baseline `read.deny`); `views/explain` says a hidden file shows up as "No such file or directory".
 
 ### VB-S14 Deny rules with a `//**/` glob do not reach the sandbox
 **Status:** VERIFIED
@@ -142,7 +142,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** Unless an `Edit` deny rule matches, a Write to a path outside the project and outside every grant ran silently in auto mode.
 **Evidence:** A step 10; T2 auto step 3.
-**Relied on by:** the reason `confine-edits` exists; README gap section; `explain` note when no hook is registered.
+**Relied on by:** the reason the hook exists; `views/explain` ("no rule: auto mode writes without a prompt").
 
 ### VB-E2 In default and acceptEdits mode, writes outside the project prompt
 **Status:** VERIFIED
@@ -159,13 +159,13 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** `Edit(//folder/**)` in `permissions.ask` makes the Write tool prompt in auto mode and acceptEdits mode. A Bash redirect into the same folder ran silently (it was in `allowWrite` in that test, see VB-U2).
 **Evidence:** T2 steps 1, 4, and the acceptEdits run.
-**Relied on by:** profile `edit-ask` (`edit_ask`).
+**Relied on by:** the `ask` access level.
 
 ### VB-E5 An `Edit` deny rule refuses the Edit/Write tools, before any hook runs
 **Status:** VERIFIED
 **Fact:** Writing or editing a path covered by an `Edit` deny rule fails in auto mode with "File is in a directory that is denied by your permission settings". The PreToolUse hook never sees such calls (no hook-log entry).
 **Evidence:** B step 6; HV steps 5, 6 and the hook log.
-**Relied on by:** `--protect`, `floor`; the hook's own protected-path deny is only a backstop.
+**Relied on by:** `deny` access, ceiling-`deny` protected paths, locked paths and `protect` globs; the hook's own deny for these is only a backstop.
 
 ### VB-E6 The Edit tool (and Write over an existing file) need a prior Read
 **Status:** VERIFIED
@@ -205,7 +205,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** In auto mode some Bash writes/deletes were blocked before running with "Blocked by auto mode / Auto mode: No reason provided" or "Permission for this action was denied by the Claude Code auto mode classifier ... Irreversible Local Destruction". It is not deterministic: `rm` and `git clean` were blocked in T1a but ran (and hit the sandbox) in T1b.
 **Evidence:** B steps 3, 4; T1a steps 2, 8 vs T1b steps 2, 8.
-**Relied on by:** nothing (it cannot be relied on). `explain` states it cannot see it.
+**Relied on by:** nothing (it cannot be relied on). `views/explain` states it cannot see it.
 
 ### VB-C2 Plain `rm` is not gated by location in auto mode
 **Status:** VERIFIED
@@ -221,25 +221,25 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED for deny rules (default mode) and ask rules (auto mode). Allow rules are assumed to use the same matcher.
 **Fact:** `Bash(uname *)`, `Bash(hostname *)` and `Bash(git stash list *)` denied the bare commands as well as ones with arguments. `Bash(pwd *)` in `ask` prompted for the bare `pwd`.
 **Evidence:** T4 steps 1, 3, 7; P2-B step 12.
-**Relied on by:** profiles emit only the `cmd *` form; `explain.bash_match`.
+**Relied on by:** presets use only the `cmd *` form; `rules.bash_match`.
 
 ### VB-R2 A rule without `*` matches only the exact command
 **Status:** VERIFIED
 **Fact:** `Bash(whoami)` denied `whoami` but not `whoami --version` (which ran, after a normal approval prompt).
 **Evidence:** T4 steps 5, 6.
-**Relied on by:** `explain.bash_match`.
+**Relied on by:** `rules.bash_match`.
 
 ### VB-R3 Deny wins over allow
 **Status:** VERIFIED for Edit rules and for the sandbox; precedence deny > ask > allow is DOCUMENTED
 **Fact:** A path covered by both an `Edit` allow (parent folder) and an `Edit` deny (sub-path) is refused. `denyWrite` beats `allowWrite` (VB-S8). Whether ask beats allow on overlapping patterns was not tested.
 **Evidence:** B steps 6 and 7; T1.
-**Relied on by:** `--protect`; `explain` verdict order; profile conflict warning.
+**Relied on by:** `views/explain` verdict order; the compiler's conflict checks.
 
 ### VB-R4 Rule path forms
 **Status:** VERIFIED for `//abs` in Edit allow, ask and deny rules; other forms DOCUMENTED
 **Fact:** `Edit(//mnt/d/x/**)` means an absolute path. Documented but untested: `~/path` (home), `/path` (relative to the settings file's source, a trap), bare `path` (relative to cwd). Sandbox paths use the standard form (`/mnt/d/x`), which differs from rule paths.
 **Evidence:** every Edit rule in the tests used `//abs`.
-**Relied on by:** `paths.rule_path`; `floor` and `secrets` use `~/` forms (see VB-U4); `explain` reports other forms as "cannot evaluate".
+**Relied on by:** `rules.rule_path` (the compiler always emits `//abs`); `views/explain` reports other forms as "cannot evaluate".
 
 ### VB-R5 Bash rules match text only and can be bypassed
 **Status:** DOCUMENTED
@@ -255,7 +255,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** A command hook with matcher `Write|Edit|MultiEdit` is invoked for Write and Edit calls in auto mode. stdin JSON contains `tool_name`, `tool_input.file_path` and `permission_mode`. The registration form `{"type":"command","command":"<exe>","args":[...],"onFailure":"block"}` works.
 **Evidence:** T3 hook log; HV hook log (Write and Edit lines).
-**Relied on by:** `hook.decide`; `engine._hook_entry`.
+**Relied on by:** `hook.decide`; `compile._hook_entry`.
 **Re-check:** `hook-verify.md`.
 
 ### VB-H2 Hook decisions
@@ -268,7 +268,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** A crashing hook (exit 1, traceback) blocks the call when the entry has `"onFailure":"block"` (the model sees "blocking because onFailure is \"block\"" and the traceback). Without `onFailure` the same crash lets the write through. A hook that denies still denies in both cases.
 **Evidence:** T3 step 4; T3b.
-**Relied on by:** `engine._hook_entry` always sets it; `doctor` fails when the hook command is missing (every Edit/Write would block). `onFailure` needs Claude Code 2.1.295 or later (DOCUMENTED).
+**Relied on by:** `compile._hook_entry` always sets it; `doctor` fails when the hook command is missing (every Edit/Write would block). `onFailure` needs Claude Code 2.1.295 or later (DOCUMENTED).
 
 ### VB-H4 The hook is not run for Bash
 **Status:** VERIFIED
@@ -285,7 +285,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 ### VB-H6 Exit code 2, payload `cwd`, hook command resolution
 **Status:** DOCUMENTED
 **Fact:** Exit code 2 from a hook blocks the call (docs). `guard` registers an absolute path to its executable so it does not depend on `PATH` (a design choice; whether hooks inherit your `PATH` was not tested). The payload `cwd` and `CLAUDE_PROJECT_DIR` are now verified: VB-H7.
-**Relied on by:** `hook.decide`, `cli._hook_command`.
+**Relied on by:** `hook.decide`, `machine.hook_command`.
 
 ### VB-H7 `CLAUDE_PROJECT_DIR` and the payload `cwd` are the launch folder
 **Status:** VERIFIED
@@ -306,7 +306,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 ### VB-P1 Settings precedence and merging
 **Status:** DOCUMENTED
 **Fact:** managed > `--settings` > `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`. Permission arrays merge across files; a deny in any scope blocks. Project-level `allow` only takes effect after workspace trust.
-**Relied on by:** `settings_view.load_effective`; scopes `local` (default) and `user`.
+**Relied on by:** `effective.load_effective`; `[everywhere]` compiles to user settings and each project to its local file.
 
 ### VB-P2 `defaultMode` auto/bypass is ignored from project and local settings
 **Status:** DOCUMENTED (since Claude Code 2.1.257)
@@ -322,7 +322,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Status:** VERIFIED
 **Fact:** `/mnt/d` and `/mnt/c` (drvfs/9p) behave like the WSL home for every sandbox fact above.
 **Evidence:** A, D, F; P2-F (`edit` access on `/mnt/c` from a project-local file).
-**Relied on by:** `PathPolicy` allows these drives, with the refusals described in the README.
+**Relied on by:** grants on Windows drives (ceiling `edit` in the baseline); `pathsafety` refuses whole drives.
 
 ### VB-P5 A session started in a sub-folder reads the repo root's project settings too
 **Status:** VERIFIED

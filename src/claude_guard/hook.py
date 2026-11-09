@@ -1,21 +1,26 @@
-"""``guard hook edit``: a PreToolUse hook for the Edit/Write tools.
+"""``guard hook edit``: the PreToolUse hook for the Edit/Write tools (design section 8).
 
-The sandbox confines Bash only (VB-S10). In auto mode the Edit/Write tools write anywhere with no
-prompt unless a deny rule matches (VB-E1). Rules cannot express "everywhere except these folders",
-because deny beats allow. This hook can: the path is structured data, so no command parsing is needed.
+The sandbox confines Bash only (VB-S10); in auto mode the file tools write anywhere unless a rule
+stops them (VB-E1), and rules cannot say "everywhere except these folders" (deny beats allow). This
+hook can: the tool's path is structured data, so there is nothing to parse.
 
-For every file-tool call it decides:
+It reads the hook data written to applied.json by the last apply (so it enforces what was applied,
+not an unapplied policy edit), and decides, first match wins:
 
-1. the path matches an ``Edit(...)`` deny rule that guard manages (protected paths, floor, guard's own
-   settings and state)  -> **deny**;
-2. the path is inside the current project or inside a folder granted with guard -> no opinion
-   (normal permission rules and prompts apply, so ``edit-ask`` still asks);
-3. anything else -> **ask** (default) or **deny** (``--unlisted deny``).
+1. no file path -> deny;
+2. resolve the path (``..``, symlinks; Windows drive paths case-insensitively, VB-U12);
+3. locked, inside a ceiling-``deny`` protected path, or a grant's ``protect`` glob -> deny (a
+   backstop: deny rules are applied before hooks run, VB-E5, VB-H5);
+4. protected: a grant naming it (or a folder inside it) and containing the path -> step 5 with that
+   grant; else inside the project -> ask; else deny;
+5. inside a grant (the most specific wins): ``modify`` refuses Write; ``deny`` refuses; ``bash``
+   counts as closed; otherwise no opinion (the rules apply, so ``ask`` still prompts);
+6. inside the project -> no opinion;
+7. closed -> ask, or deny with ``closed = "deny"``.
 
-It never allows. It only tightens, so it cannot widen what Claude Code would permit. It is
-registered with ``onFailure: "block"``: a crash blocks the write (without that a crashing hook lets
-the write through: VB-H3). Deny rules are evaluated before hooks (VB-E5), so for protected paths this
-hook is a backstop. The ask prompt does not show the reason (VB-E7), so it is also written to the log. Every decision is appended to ``<state dir>/hook.log``.
+It never allows, so it cannot widen anything. Registered with ``onFailure: "block"`` (VB-H3), so a
+crash blocks the write. Decisions go to ``hook.log``, since the prompt does not show the reason
+(VB-E7). Imports are kept light: this runs on every file-tool call.
 """
 
 from __future__ import annotations
@@ -28,12 +33,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .errors import GuardError
-from .state import load_state
+from .rules import find_project, glob_matches
 
 FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-HOOK_MATCHER = "|".join(FILE_TOOLS)
-_PERM_DENY = "permissions.deny"
+_DRIVE = re.compile(r"^/mnt/[a-zA-Z](/|$)")
 
 
 @dataclass(frozen=True)
@@ -42,136 +45,165 @@ class Decision:
     reason: str
 
 
-def glob_match(pattern: str, path: str) -> bool:
-    """Match ``path`` against an Edit-rule glob: ``*`` stays in one segment, ``**`` crosses them.
-
-    Paths on Windows drives (``/mnt/<letter>/``) are matched case-insensitively, because the
-    filesystem is (an assumption, VB-U12)."""
-    out, i = [], 0
-    while i < len(pattern):
-        if pattern.startswith("**/", i):
-            out.append("(?:.*/)?")
-            i += 3
-        elif pattern.startswith("**", i):
-            out.append(".*")
-            i += 2
-        elif pattern[i] == "*":
-            out.append("[^/]*")
-            i += 1
-        elif pattern[i] == "?":
-            out.append("[^/]")
-            i += 1
-        else:
-            out.append(re.escape(pattern[i]))
-            i += 1
-    flags = re.IGNORECASE if re.match(r"/mnt/[A-Za-z](/|$)", path) else 0
-    return re.fullmatch("".join(out), path, flags) is not None
+def _key(p: str) -> str:
+    """Comparison key: drvfs paths are case-insensitive (VB-U12)."""
+    return p.casefold() if _DRIVE.match(p) else p
 
 
-def _real(p: str | Path) -> str:
+def within(path: str, folder: str) -> bool:
+    p, f = _key(path.rstrip("/") or "/"), _key(folder.rstrip("/") or "/")
+    return p == f or p.startswith(f if f == "/" else f + "/")
+
+
+def _matches(pattern: str, path: str) -> bool:
+    return glob_matches(_key(pattern), Path(_key(path)))
+
+
+def _resolve(raw: str, cwd: str | None) -> str:
+    p = raw if os.path.isabs(raw) else os.path.join(cwd or os.getcwd(), raw)
     return os.path.realpath(p)
 
 
-def _within(path: str, root: str) -> bool:
-    return path == root or path.startswith(root.rstrip("/") + "/")
+def _scope(data: dict[str, Any], project: str | None) -> dict[str, Any]:
+    scopes = data.get("scopes", {})
+    if project is not None and project in scopes:
+        return scopes[project]
+    return scopes.get("*", {"closed": "ask", "grants": [], "protected": [], "locked": []})
 
 
-def _active(settings_file: str, home: Path, cwd: str) -> bool:
-    """Is a grant recorded for this settings file in force for a session started in ``cwd``?"""
-    project = Path(settings_file).parent.parent
-    if _real(project) == _real(home):
-        return True  # ~/.claude/settings*.json applies to every session
-    return _within(cwd, _real(project))
+def _innermost(items: list[dict[str, Any]], path: str) -> dict[str, Any] | None:
+    best = None
+    for item in items:  # later entries (the project's) win ties
+        if within(path, item["path"]) and (best is None or len(item["path"]) >= len(best["path"])):
+            best = item
+    return best
 
 
-def _rule_glob(rule: str, home: Path) -> str | None:
-    if not (rule.startswith("Edit(") and rule.endswith(")")):
-        return None
-    inner = rule[5:-1]
-    if inner.startswith("//"):
-        return inner[1:]
-    if inner.startswith("~/"):
-        return str(home) + inner[1:]
-    return None  # relative forms are never emitted by guard
+def _by_grant(g: dict[str, Any], tool: str, path: str) -> Decision | None | str:
+    access = g["access"]
+    if access == "deny":
+        return Decision("deny", f"{path} is in {g['path']}, granted with access deny")
+    if access == "modify" and tool == "Write":
+        return Decision(
+            "deny",
+            f"{g['path']} allows editing existing files only (access modify): use Edit, not Write",
+        )
+    if access == "bash":
+        return "closed"  # the file tools get nothing from a bash grant
+    return None
 
 
 def decide(
-    payload: dict[str, Any], state: dict[str, Any], home: Path, unlisted: str = "ask"
+    payload: dict[str, Any], data: dict[str, Any], project_dir: str | None
 ) -> Decision | None:
-    if payload.get("tool_name") not in FILE_TOOLS:
-        return None
-    tool_input = payload.get("tool_input") or {}
-    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if not isinstance(raw, str) or not raw:
-        return Decision("deny", "claude-guard: the tool call has no file path to check")
-    cwd = _real(payload.get("cwd") or os.getcwd())
-    lexical = os.path.normpath(os.path.join(cwd, os.path.expanduser(raw)))
-    path = _real(lexical)
+    tool = payload.get("tool_name", "")
+    tin = payload.get("tool_input") or {}
+    raw = tin.get("file_path") or tin.get("notebook_path")
+    if not raw or not isinstance(raw, str):
+        return Decision("deny", f"{tool}: no file path in the tool call")
+    path = _resolve(raw, payload.get("cwd") or project_dir)
 
-    active_files = {f for f in state["files"] if _active(f, home, cwd)}
-    for f in active_files:
-        for erec in state["files"][f]["entries"].values():
-            if erec["kind"] != "array" or erec["path"] != _PERM_DENY:
-                continue
-            pat = _rule_glob(erec["value"], home) if isinstance(erec["value"], str) else None
-            if pat and (glob_match(pat, path) or glob_match(pat, lexical)):
-                return Decision(
-                    "deny", f"claude-guard: {path} is protected by a rule guard manages ({pat})"
-                )
+    home = data.get("home") or str(Path.home())
+    start = project_dir or payload.get("cwd")
+    root = find_project(Path(start), Path(home)) if start else None
+    project = str(root) if root is not None else None
+    scope = _scope(data, project)
+    grants: list[dict[str, Any]] = scope.get("grants", [])
+    protected: list[dict[str, Any]] = scope.get("protected", [])
 
-    if _within(path, cwd):
-        return None
-    for g in state["grants"].values():
-        if g["folder"] and g["settings_file"] in active_files and _within(path, _real(g["folder"])):
+    for pat in scope.get("locked", []):
+        if _matches(pat, path):
+            return Decision("deny", f"{path} is locked ({pat}): use `guard propose`")
+    for p in protected:
+        if p["ceiling"] == "deny" and within(path, p["path"]):
+            return Decision("deny", f"{path} is protected ({p['path']}), ceiling deny")
+    for g in grants:
+        if within(path, g["path"]):
+            for glob in g.get("protect", []):  # same meaning as the Edit(//grant/glob) deny rule
+                if _matches(g["path"].rstrip("/") + "/" + glob, path):
+                    return Decision("deny", f"{path} is protected by {glob!r} in {g['path']}")
+
+    in_project = project is not None and within(path, project)
+    prot = _innermost([p for p in protected if p["ceiling"] != "deny"], path)
+    candidates = grants
+    if prot is not None:
+        candidates = [g for g in grants if within(g["path"], prot["path"])]
+    grant = _innermost(candidates, path)
+
+    if prot is not None and grant is None:
+        if in_project:
+            return Decision("ask", f"{path} is protected ({prot['path']}), inside the project")
+        return Decision("deny", f"{path} is protected ({prot['path']}) and no grant opens it")
+
+    closed = False
+    if grant is not None:
+        verdict = _by_grant(grant, tool, path)
+        if isinstance(verdict, Decision):
+            return verdict
+        closed = verdict == "closed"
+        if not closed:
             return None
+    if in_project and not closed:
+        return None
+    mode = scope.get("closed") or "ask"
+    where = f"{path} is outside the project and every grant"
+    if closed:
+        where = f"{path} is in {grant['path']} (access bash: Bash only)"  # type: ignore[index]
+    return Decision(mode, f"{where}; `guard explain {path}` says more")
 
-    reason = (
-        f"claude-guard: {path} is outside the project and every folder granted with guard. "
-        "To allow it, run: guard allow <folder> <profile>"
-    )
-    return Decision(unlisted if unlisted in ("ask", "deny") else "ask", reason)
 
-
-def run_hook(
-    stdin_text: str, state_dir: Path, unlisted: str, home: Path, now: datetime | None = None
-) -> str:
-    """Decide for one hook invocation. Returns the JSON to print ("" = no opinion)."""
-    try:
-        payload = json.loads(stdin_text)
-    except json.JSONDecodeError as e:
-        raise GuardError(f"hook input is not valid JSON: {e}") from e
-    if not isinstance(payload, dict):
-        raise GuardError("hook input is not a JSON object")
-    state = load_state(state_dir / "state.json")  # corrupt state raises: the hook then blocks
-    decision = decide(payload, state, home, unlisted)
-    _log(state_dir, payload, decision, now)
-    if decision is None:
-        return ""
+def _output(d: Decision) -> str:
     return json.dumps(
         {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "permissionDecision": decision.action,
-                "permissionDecisionReason": decision.reason,
+                "permissionDecision": d.action,
+                "permissionDecisionReason": d.reason,
             }
         }
     )
 
 
-def _log(
-    state_dir: Path, payload: dict[str, Any], d: Decision | None, now: datetime | None
-) -> None:
-    ti = payload.get("tool_input") or {}
-    entry = {
-        "t": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
-        "tool": payload.get("tool_name"),
-        "path": ti.get("file_path") or ti.get("notebook_path"),
-        "permission_mode": payload.get("permission_mode"),
-        "decision": d.action if d else "none",
-    }
+def _log(guard_home: Path, tool: str, path: str, d: Decision | None) -> None:
+    line = "\t".join(
+        [
+            datetime.now(UTC).isoformat(timespec="seconds"),
+            d.action if d else "pass",
+            tool,
+            path,
+            d.reason if d else "",
+        ]
+    )
     try:
-        state_dir.mkdir(parents=True, exist_ok=True)
-        with (state_dir / "hook.log").open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        guard_home.mkdir(parents=True, exist_ok=True)
+        with (guard_home / "hook.log").open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
     except OSError:
-        pass  # logging must never change the decision
+        pass  # logging must never decide
+
+
+def run_hook(stdin_text: str, guard_home: Path) -> str:
+    """Process interface: stdin JSON in, hook JSON (or nothing) out. Raises on bad input."""
+    payload = json.loads(stdin_text)
+    if not isinstance(payload, dict):
+        raise TypeError("hook input is not a JSON object")
+    try:
+        applied = json.loads((guard_home / "applied.json").read_text(encoding="utf-8"))
+        data = applied.get("hook") or {}
+    except FileNotFoundError:
+        data = {}
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd")
+    if not data:
+        d: Decision | None = Decision(
+            "ask", "claude-guard has no applied policy: run `guard apply`"
+        )
+    else:
+        d = decide(payload, data, project_dir)
+    tin = payload.get("tool_input") or {}
+    _log(
+        guard_home,
+        str(payload.get("tool_name")),
+        str(tin.get("file_path") or tin.get("notebook_path")),
+        d,
+    )
+    return _output(d) if d else ""

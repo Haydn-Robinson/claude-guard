@@ -1,3 +1,5 @@
+"""End-to-end: the guard CLI against a temporary home (never your real settings)."""
+
 from __future__ import annotations
 
 import io
@@ -8,572 +10,497 @@ from pathlib import Path
 import pytest
 
 from claude_guard.cli import Env, main
-from claude_guard.pathsafety import PathPolicy
+from claude_guard.context import Ctx
 
 SNAP_DIR = Path(__file__).parent / "snapshots"
 
 
 class Runner:
-    def __init__(self, tmp_path: Path, home: Path, proj: Path, policy: PathPolicy):
-        self.tmp = tmp_path
-        self.home, self.proj, self.policy = home, proj, policy
-        self.state_dir = tmp_path / "state"
-        self.managed = tmp_path / "managed"
-        self.interactive = False
-        self.answer = True
+    def __init__(self, tmp: Path):
+        self.tmp = tmp
+        self.home = tmp / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        self.proj = self.home / "repos" / "proj"
+        (self.proj / ".git").mkdir(parents=True)
+        self.gh = self.home / ".config" / "claude-guard"
+        self.bin = tmp / "opt" / "bin" / "guard"
+        self.bin.parent.mkdir(parents=True)
+        self.bin.write_text("#!/bin/sh\n")
+        self.bin.chmod(0o755)
+        self.queue = tmp / "queue"
+        self.cwd = self.proj
+        self.interactive = True
+        self.in_claude = False
+        self.answers: list[bool] = []
         self.prompts: list[str] = []
-        self.hook_exe = tmp_path / "bin" / "guard"
-        self.hook_exe.parent.mkdir()
-        self.hook_exe.write_text("#!/bin/sh\n")
-        self.hook_exe.chmod(0o755)
+        self.editor = None
 
-    def run(self, *argv: str, cwd: Path | None = None, stdin: str = "") -> tuple[int, str, str]:
-        out, err = io.StringIO(), io.StringIO()
+    @property
+    def user(self) -> Path:
+        return self.home / ".claude" / "settings.json"
 
-        def confirm(prompt: str) -> bool:
-            self.prompts.append(prompt)
-            return self.answer
+    @property
+    def local(self) -> Path:
+        return self.proj / ".claude" / "settings.local.json"
 
-        env = Env(
+    @property
+    def policy(self) -> Path:
+        return self.gh / "policy.toml"
+
+    def _confirm(self, prompt: str) -> bool:
+        self.prompts.append(prompt)
+        return self.answers.pop(0) if self.answers else True
+
+    def run(self, *argv: str, stdin: str = "") -> tuple[int, str, str]:
+        ctx = Ctx(
             home=self.home,
-            cwd=cwd or self.proj,
-            state_dir=self.state_dir,
+            cwd=self.cwd,
+            guard_home=self.gh,
+            managed=self.tmp / "etc" / "claude-code",
+            hook=(str(self.bin),),
+            run=lambda q: None,
+            which=lambda t: f"/usr/bin/{t}",
+            wsl=False,
+            queue=[self.queue],
+        )
+        out, err = io.StringIO(), io.StringIO()
+        env = Env(
+            ctx,
             out=out,
             err=err,
-            interactive=self.interactive,
-            confirm=confirm,
-            policy=self.policy,
-            managed_dir=self.managed,
-            which=lambda name: f"/usr/bin/{name}",
             stdin=io.StringIO(stdin),
-            hook_command=[str(self.hook_exe)],
+            interactive=self.interactive,
+            in_claude=self.in_claude,
+            confirm=self._confirm,
+            editor=self.editor or (lambda p: 0),
         )
         rc = main(list(argv), env)
         return rc, out.getvalue(), err.getvalue()
 
-    def norm(self, text: str) -> str:
-        return text.replace(str(self.tmp), "<TMP>")
+    def ok(self, *argv: str, **kw) -> str:
+        rc, out, err = self.run(*argv, **kw)
+        assert rc == 0, f"rc={rc}\n{out}\n{err}"
+        return out
 
 
 @pytest.fixture
-def cli(tmp_path: Path, home: Path, proj: Path, policy: PathPolicy) -> Runner:
-    return Runner(tmp_path, home, proj, policy)
-
-
-def snap(name: str, text: str) -> None:
-    path = SNAP_DIR / f"{name}.txt"
-    if os.environ.get("UPDATE_SNAPSHOTS") == "1" or not path.exists():
-        SNAP_DIR.mkdir(exist_ok=True)
-        path.write_text(text)
-        if os.environ.get("UPDATE_SNAPSHOTS") != "1":
-            pytest.fail(f"snapshot {name} did not exist; created it. Review it, then re-run.")
-        return
-    assert text == path.read_text(), f"snapshot {name} differs (UPDATE_SNAPSHOTS=1 to refresh)"
+def g(tmp_path: Path) -> Runner:
+    return Runner(tmp_path)
 
 
 def read(p: Path) -> dict:
     return json.loads(p.read_text())
 
 
-# ---- allow -----------------------------------------------------------------------------------
+def snapshot(name: str, text: str, tmp: Path) -> None:
+    text = text.replace(str(tmp), "<TMP>").replace(f"claude-{os.getuid()}", "claude-<UID>")
+    path = SNAP_DIR / name
+    if os.environ.get("UPDATE_SNAPSHOTS") or not path.exists():
+        path.write_text(text)
+        if not os.environ.get("UPDATE_SNAPSHOTS"):
+            pytest.fail(f"snapshot {name} did not exist; created it. Review it, then re-run.")
+        return
+    assert text == path.read_text(), f"snapshot {name} differs (UPDATE_SNAPSHOTS=1 to refresh)"
 
 
-def test_allow_dry_run_changes_nothing_and_matches_snapshot(
-    cli: Runner, target: Path, settings: Path
-):
-    rc, out, _ = cli.run(
-        "allow",
-        str(target),
+# ---- init ------------------------------------------------------------------------------------------
+
+
+def test_init_creates_policy_applies_baseline_and_runs_doctor(g: Runner):
+    out = g.ok("init")
+    assert g.policy.exists()
+    data = read(g.user)
+    assert data["sandbox"]["enabled"] is True
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == str(g.bin)
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["args"] == [
+        "hook",
         "edit",
-        "git-safe",
-        "--protect",
-        ".private/**",
-        "--protect",
-        "archive/**",
-        "--dry-run",
-    )
-    assert rc == 0
-    assert not settings.exists() and not cli.state_dir.exists()
-    assert "Dry run: nothing was changed." in out
-    snap("allow_dry_run_target", cli.norm(out))
+        "--guard-home",
+        str(g.gh),
+    ]
+    assert "The baseline preset" in out and "0 failure(s)" in out
+    assert g.prompts == ["Apply these changes?"]
 
 
-def test_allow_applies_with_yes(cli: Runner, target: Path, settings: Path):
-    rc, out, _ = cli.run("allow", str(target), "--yes")
-    assert rc == 0 and "Applied." in out
-    data = read(settings)
-    assert str(target) in data["sandbox"]["filesystem"]["allowWrite"]  # default profile: edit
-    assert "Read(~/.ssh/**)" in data["permissions"]["deny"]  # secrets auto-applied
-    assert "Edit tool" not in out and "Edit/Write tools are NOT sandboxed" in out
-    assert "guard allow --global lock" in out  # sandbox not enabled hint
+def test_init_twice_refused(g: Runner):
+    g.ok("init")
+    rc, _, err = g.run("init")
+    assert rc == 2 and "already exists" in err
 
 
-def test_secrets_only_on_first_management_and_can_be_skipped(
-    cli: Runner, tmp_path: Path, target: Path, settings: Path
-):
-    other = tmp_path / "other"
-    other.mkdir()
-    assert cli.run("allow", str(target), "--yes", "--no-secrets")[0] == 0
-    assert "Read(~/.ssh/**)" not in read(settings)["permissions"].get("deny", [])
-    assert cli.run("allow", str(other), "--yes")[0] == 0  # not first any more -> still no secrets
-    assert "Read(~/.ssh/**)" not in read(settings)["permissions"]["deny"]
+def test_init_dry_run_changes_nothing(g: Runner):
+    out = g.ok("init", "--dry-run")
+    assert "Dry run" in out and not g.policy.exists() and not g.user.exists()
 
 
-def test_secrets_not_duplicated_for_second_folder(
-    cli: Runner, tmp_path: Path, target: Path, settings: Path
-):
-    other = tmp_path / "other"
-    other.mkdir()
-    cli.run("allow", str(target), "--yes")
-    cli.run("allow", str(other), "--yes")
-    assert read(settings)["permissions"]["deny"].count("Read(~/.ssh/**)") == 1
+def test_declining_changes_nothing(g: Runner):
+    g.answers = [False]
+    rc, out, _ = g.run("init")
+    assert rc == 1 and "Aborted" in out
+    assert not g.policy.exists() and not g.user.exists()
 
 
-def test_option_order_is_flexible(cli: Runner, target: Path, settings: Path):
-    rc, _, err = cli.run(
-        "allow", "--scope", "local", str(target), "edit", "--protect", "x/**", "--yes"
-    )
-    assert rc == 0, err
-    assert any(r.endswith("/x/**)") for r in read(settings)["permissions"]["deny"])
+def test_no_terminal_needs_yes(g: Runner):
+    g.interactive = False
+    rc, _, err = g.run("init")
+    assert rc == 2 and "--yes" in err and not g.policy.exists()
+    g.ok("init", "--yes")
+    assert g.policy.exists()
 
 
-def test_non_tty_without_yes_refuses(cli: Runner, target: Path, settings: Path):
-    rc, _, err = cli.run("allow", str(target))
-    assert rc == 2 and "--yes" in err
-    assert not settings.exists()
+def test_commands_before_init_say_so(g: Runner):
+    rc, _, err = g.run("allow", str(g.tmp / "x"))
+    assert rc == 2 and "guard init" in err
 
 
-def test_interactive_decline_and_accept(cli: Runner, target: Path, settings: Path):
-    cli.interactive = True
-    cli.answer = False
-    rc, out, _ = cli.run("allow", str(target))
-    assert rc == 1 and "Aborted" in out and not settings.exists()
-    assert cli.prompts == ["Apply these changes?"]
-    cli.answer = True
-    assert cli.run("allow", str(target))[0] == 0 and settings.exists()
+# ---- allow / revoke / protect ----------------------------------------------------------------------
 
 
-def test_create_flag(cli: Runner, tmp_path: Path, settings: Path):
-    new = tmp_path / "brand" / "new"
-    rc, out, _ = cli.run("allow", str(new), "--create", "--dry-run")
-    assert rc == 0 and "Would create folder" in out and not new.exists()
-    assert "does not exist" not in out
-    rc, out, _ = cli.run("allow", str(new), "--create", "--yes")
-    assert rc == 0 and new.is_dir()
+def test_allow_defaults_to_full_for_the_current_project(g: Runner):
+    g.ok("init")
+    out_dir = g.tmp / "data" / "out"
+    out_dir.mkdir(parents=True)
+    g.ok("allow", str(out_dir))
+    assert 'projects."~/repos/proj"' in g.policy.read_text()
+    assert f"Edit(/{out_dir}/**)" in read(g.local)["permissions"]["allow"]
+    assert "Edit" not in json.dumps(read(g.user)["permissions"].get("allow", []))
 
 
-def test_missing_folder_without_create_warns(cli: Runner, tmp_path: Path):
-    rc, out, _ = cli.run("allow", str(tmp_path / "ghost"), "--dry-run")
-    assert rc == 0 and "warning:" in out and "does not exist" in out
+def test_allow_relative_path_and_comments_survive(g: Runner):
+    g.ok("init")
+    g.policy.write_text(g.policy.read_text() + "# my note\n")
+    (g.proj / "build").mkdir()
+    g.cwd = g.proj / "build"
+    g.ok("allow", "../../other-out", "--create", "--access", "bash")
+    target = g.home / "repos" / "other-out"
+    assert target.is_dir()  # --create
+    assert str(target) in read(g.local)["sandbox"]["filesystem"]["allowWrite"]
+    assert "# my note" in g.policy.read_text()
 
 
-@pytest.mark.parametrize("bad", ["/", "/mnt/d", "/mnt/c/Windows", "/mnt/c/Users/haydn"])
-def test_unsafe_folder_rejected(cli: Runner, settings: Path, bad: str):
-    rc, _, err = cli.run("allow", bad, "--yes")
-    assert rc == 2 and err.startswith("error:")
-    assert not settings.exists() and not cli.state_dir.exists()
+def test_allow_everywhere(g: Runner):
+    g.ok("init")
+    d = g.tmp / "notes"
+    d.mkdir()
+    g.ok("allow", str(d), "--access", "ask", "--everywhere")
+    assert f"Edit(/{d}/**)" in read(g.user)["permissions"]["ask"]
+    assert str(d) in read(g.user)["sandbox"]["filesystem"]["denyWrite"]
 
 
-def test_scope_user_writes_home_settings(cli: Runner, target: Path, home: Path, settings: Path):
-    assert cli.run("allow", str(target), "--scope", "user", "--yes")[0] == 0
-    assert (home / ".claude" / "settings.json").exists() and not settings.exists()
+def test_allow_outside_a_project_needs_a_scope(g: Runner):
+    g.ok("init")
+    g.cwd = g.home
+    rc, _, err = g.run("allow", str(g.tmp / "x"))
+    assert rc == 2 and "--everywhere" in err
 
 
-def test_project_option(cli: Runner, tmp_path: Path, target: Path):
-    other = tmp_path / "other-proj"
-    other.mkdir()
-    assert cli.run("allow", str(target), "--project", str(other), "--yes")[0] == 0
-    assert (other / ".claude" / "settings.local.json").exists()
+def test_allow_above_a_ceiling_refused_and_nothing_changes(g: Runner):
+    g.ok("init")
+    secret = g.home / ".ssh"
+    secret.mkdir()
+    before = (g.policy.read_text(), g.user.read_text())
+    rc, _, err = g.run("allow", str(secret), "--everywhere")
+    assert rc == 2 and "ceiling" in err and "ask" in err
+    assert (g.policy.read_text(), g.user.read_text()) == before
+    g.ok("allow", str(secret), "--everywhere", "--access", "ask")
 
 
-def test_bad_project_dir(cli: Runner, target: Path, tmp_path: Path):
-    rc, _, err = cli.run("allow", str(target), "--project", str(tmp_path / "nope"), "--yes")
-    assert rc == 2 and "project directory" in err
+def test_allow_on_a_locked_path_refused(g: Runner):
+    g.ok("init")
+    rc, _, err = g.run("allow", str(g.gh), "--everywhere")
+    assert rc == 2 and "locked" in err
 
 
-def test_global_lock_and_hint_goes_away(cli: Runner, target: Path, settings: Path):
-    rc, out, _ = cli.run("allow", "--global", "lock", "--yes")
-    assert rc == 0 and "guard allow --global lock" not in out
-    assert read(settings)["sandbox"]["enabled"] is True
-    assert cli.run("allow", "--global")[0] == 2  # needs profile names
+def test_allow_conflict_refused(g: Runner):
+    g.ok("init")
+    d = g.tmp / "w"
+    (d / "in").mkdir(parents=True)
+    g.ok("allow", str(d), "--access", "edit")
+    rc, _, err = g.run("allow", str(d / "in"))
+    assert rc == 2 and "inside grant" in err
 
 
-def test_edit_ask_warning_shown(cli: Runner, target: Path):
-    _, out, _ = cli.run("allow", str(target), "edit-ask", "--dry-run")
-    assert "warning: profile edit-ask" in out
-
-
-def test_noop_second_allow(cli: Runner, target: Path):
-    cli.run("allow", str(target), "--yes")
-    rc, out, _ = cli.run("allow", str(target), "--yes")
-    assert rc == 0 and "Nothing to change." in out
-
-
-# ---- revoke ----------------------------------------------------------------------------------
-
-
-def test_revoke_dry_run_snapshot_then_apply_restores_exact_file(
-    cli: Runner, target: Path, settings: Path
-):
-    original = (
-        json.dumps({"model": "opus", "permissions": {"allow": ["Bash(ls *)"]}}, indent=2) + "\n"
-    )
-    settings.write_text(original)
-    cli.run("allow", str(target), "edit", "git-safe", "--protect", ".private/**", "--yes")
-    assert settings.read_text() != original
-    rc, out, _ = cli.run("revoke", str(target), "--dry-run")
-    assert rc == 0 and "Dry run" in out
-    snap("revoke_dry_run_target", cli.norm(out))
-    assert cli.run("revoke", str(target), "--yes")[0] == 0
-    # secrets was auto-applied as a separate global grant; remove it too
-    assert cli.run("revoke", "--global", "--yes")[0] == 0
-    assert settings.read_text() == original
-
-
-def test_revoke_single_profile(cli: Runner, target: Path, settings: Path):
-    cli.run("allow", str(target), "edit", "git-safe", "--yes")
-    assert cli.run("revoke", str(target), "git-safe", "--yes")[0] == 0
-    allow = read(settings)["permissions"]["allow"]
-    assert "Bash(git status *)" not in allow and "Bash(mkdir *)" in allow
-
-
-def test_revoke_unknown(cli: Runner, target: Path):
-    rc, _, err = cli.run("revoke", str(target), "--yes")
+def test_revoke(g: Runner):
+    g.ok("init")
+    d = g.tmp / "w"
+    d.mkdir()
+    g.ok("allow", str(d))
+    g.ok("revoke", str(d))
+    assert not g.local.exists()  # guard created it, guard removed it
+    assert "projects" not in g.policy.read_text()
+    rc, _, err = g.run("revoke", str(d))
     assert rc == 2 and "no grant" in err
-    assert cli.run("revoke", "--yes")[0] == 2
 
 
-# ---- status ----------------------------------------------------------------------------------
+def test_protect_then_allow_above_the_ceiling(g: Runner):
+    g.ok("init")
+    d = g.tmp / "archive"
+    d.mkdir()
+    g.ok("protect", str(d), "--ceiling", "deny", "--everywhere")
+    assert f"Edit(/{d}/**)" in read(g.user)["permissions"]["deny"]
+    rc, _, err = g.run("allow", str(d / "x"), "--everywhere")
+    assert rc == 2 and "ceiling" in err
 
 
-def test_status_text_snapshot_and_unmanaged(cli: Runner, target: Path, settings: Path):
-    settings.write_text(json.dumps({"permissions": {"allow": ["Bash(curl *)"]}}, indent=2) + "\n")
-    cli.run("allow", str(target), "edit", "git-safe", "--protect", ".private/**", "--yes")
-    rc, out, _ = cli.run("status")
-    assert rc == 0 and "unmanaged permissions.allow:" in out and "Bash(curl *)" in out
-    assert "protected: .private/**" in out
-    snap("status_after_grant", cli.norm(out))
+# ---- apply, drift, plan, edit, uninstall -----------------------------------------------------------
 
 
-def test_status_json(cli: Runner, target: Path, settings: Path):
-    cli.run("allow", str(target), "edit", "--protect", "archive/**", "--yes")
-    rc, out, _ = cli.run("status", "--json")
-    data = json.loads(out)
-    assert rc == 0
-    local = next(f for f in data["files"] if f["scope"] == "local")
-    folders = {g["folder"]: g for g in local["grants"]}
-    assert folders[str(target)]["profiles"] == ["edit"]
-    assert folders[str(target)]["protected_paths"] == ["archive/**"]
-    assert None in folders  # global secrets grant
-    assert local["unmanaged"] == {}
-    user = next(f for f in data["files"] if f["scope"] == "user")
-    assert user["exists"] is False and user["grants"] == []
+def test_apply_twice_is_nothing(g: Runner):
+    g.ok("init")
+    assert "Nothing to change" in g.ok("apply")
 
 
-def test_status_with_nothing(cli: Runner):
-    rc, out, _ = cli.run("status")
-    assert rc == 0 and "no grants managed" in out
+def test_drift_is_reported_and_repaired(g: Runner):
+    g.ok("init")
+    data = read(g.user)
+    data["sandbox"]["enabled"] = False
+    g.user.write_text(json.dumps(data, indent=2) + "\n")
+    st = g.ok("status")
+    assert "do NOT match" in st and "changed by hand" in st
+    g.ok("apply")
+    assert read(g.user)["sandbox"]["enabled"] is True
 
 
-def test_status_shows_other_projects_files(cli: Runner, tmp_path: Path, target: Path):
-    other = tmp_path / "other-proj"
-    other.mkdir()
-    cli.run("allow", str(target), "--project", str(other), "--yes")
-    _, out, _ = cli.run("status")
-    assert "Other managed file" in out and "other-proj" in out
+def test_plan_changes_nothing(g: Runner):
+    g.ok("init")
+    g.policy.write_text(g.policy.read_text().replace('["baseline"]', '["baseline", "strict"]'))
+    before = g.user.read_text()
+    out = g.ok("plan")
+    assert "Dry run" in out and g.user.read_text() == before
 
 
-# ---- profiles --------------------------------------------------------------------------------
+def test_edit_validates_and_applies(g: Runner):
+    g.ok("init")
 
-
-def test_profiles_list_snapshot(cli: Runner):
-    rc, out, _ = cli.run("profiles")
-    assert rc == 0
-    snap("profiles_list", out)
-
-
-def test_profile_show_snapshot_and_unknown(cli: Runner):
-    rc, out, _ = cli.run("profile", "show", "edit")
-    assert rc == 0
-    snap("profile_show_edit", out)
-    _, out, _ = cli.run("profile", "show", "edit-ask")
-    assert "WARNING:" in out
-    rc, _, err = cli.run("profile", "show", "nope")
-    assert rc == 2 and "unknown profile" in err
-
-
-def test_user_profiles_file_is_used(cli: Runner):
-    cli.state_dir.mkdir()
-    (cli.state_dir / "profiles.toml").write_text(
-        '[mine]\ndescription = "x"\nbash_allow = ["Bash(foo *)"]\n'
-    )
-    assert "mine" in cli.run("profiles")[1]
-
-
-# ---- doctor ----------------------------------------------------------------------------------
-
-
-def test_doctor_fails_without_sandbox_and_passes_after_lock(cli: Runner, target: Path):
-    rc, out, _ = cli.run("doctor")
-    assert rc == 1 and "[FAIL] sandbox enabled" in out
-    cli.run("allow", "--global", "lock", "--yes")
-    rc, out, _ = cli.run("doctor")
-    assert rc == 0, out
-    assert "0 failure(s), 0 warning(s)" in out
-    snap("doctor_healthy", cli.norm(out))
-
-
-def test_doctor_missing_tools(cli: Runner, tmp_path: Path, policy, home, proj):
-    out, err = io.StringIO(), io.StringIO()
-    env = Env(
-        home=home,
-        cwd=proj,
-        state_dir=tmp_path / "s",
-        out=out,
-        err=err,
-        policy=policy,
-        managed_dir=tmp_path / "m",
-        which=lambda n: None,
-    )
-    assert main(["doctor"], env) == 1
-    assert "[FAIL] bwrap installed" in out.getvalue() and "[FAIL] socat installed" in out.getvalue()
-
-
-def test_doctor_detects_hand_edits_missing_folder_and_auto_mode(
-    cli: Runner, tmp_path: Path, target: Path, settings: Path
-):
-    cli.run("allow", str(target), "edit", "--yes")
-    cli.run("allow", "--global", "lock", "--yes")
-    data = read(settings)
-    data["permissions"]["allow"].remove("Bash(cp *)")
-    data["permissions"]["defaultMode"] = "auto"
-    settings.write_text(json.dumps(data, indent=2) + "\n")
-    target.rmdir()
-    rc, out, _ = cli.run("doctor")
-    assert rc == 0
-    assert "[warn] managed entries intact" in out and "Bash(cp *)" in out
-    assert "[warn] granted folder exists" in out
-    assert "[warn] Edit/Write tools in auto mode" in out
-
-
-def test_doctor_reports_invalid_settings_json(cli: Runner, settings: Path):
-    settings.write_text("{nope")
-    rc, out, _ = cli.run("doctor")
-    assert rc == 1 and "[FAIL] settings JSON valid" in out
-
-
-def test_doctor_flags_system_drive_grant(cli: Runner, settings: Path, policy):
-    # Craft state by hand: a grant on /mnt/c (could only exist from older versions or hand edits)
-    state_dir = cli.state_dir
-    state_dir.mkdir()
-    (state_dir / "state.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "grants": {
-                    "g": {
-                        "folder": "/mnt/c/Users/haydn/proj",
-                        "settings_file": str(settings),
-                        "profiles": ["edit"],
-                        "protect": [],
-                        "created_at": "x",
-                        "entries": [],
-                    }
-                },
-                "files": {},
-            }
+    def editor(path: Path) -> int:
+        path.write_text(
+            path.read_text().replace('["baseline"]', '["baseline", "confirm-destructive"]')
         )
+        return 0
+
+    g.editor = editor
+    g.ok("edit")
+    assert "Bash(rm *)" in read(g.user)["permissions"]["ask"]
+    assert "confirm-destructive" in g.policy.read_text()
+
+
+def test_edit_with_an_error_changes_nothing(g: Runner):
+    g.ok("init")
+    before = g.policy.read_text()
+
+    def editor(path: Path) -> int:
+        path.write_text("version = 1\n[everywhere]\nwrite = [{ path = 'rel', access = 'full' }]\n")
+        return 0
+
+    g.editor = editor
+    g.answers = [False]  # "Edit again?" -> no
+    rc, out, _ = g.run("edit")
+    assert rc == 1 and "absolute" in out
+    assert g.policy.read_text() == before
+    assert not (g.gh / ".policy.edit.toml").exists()
+
+
+def test_uninstall_restores_settings_and_keeps_the_policy(g: Runner):
+    g.user.write_text(json.dumps({"model": "opus"}, indent=2) + "\n")
+    g.ok("init")
+    d = g.tmp / "w"
+    d.mkdir()
+    g.ok("allow", str(d))
+    g.ok("uninstall")
+    assert read(g.user) == {"model": "opus"}
+    assert not g.local.exists()
+    assert g.policy.exists()
+
+
+# ---- views ------------------------------------------------------------------------------------------
+
+
+def test_status_snapshot(g: Runner):
+    g.ok("init")
+    d = g.tmp / "data"
+    d.mkdir()
+    g.ok("allow", str(d), "--access", "edit", "--protect", "*.lock")
+    snapshot("v2_status.txt", g.ok("status"), g.tmp)
+    s = json.loads(g.ok("status", "--json", "--verbose"))
+    assert s["in_sync"] and s["baseline"]
+    assert any(x["access"] == "edit" for sc in s["scopes"] for x in sc["grants"])
+    assert str(g.local) in s["files"]
+
+
+def test_status_lists_unmanaged_entries(g: Runner):
+    g.user.write_text(json.dumps({"permissions": {"allow": ["Bash(curl *)"]}}) + "\n")
+    g.ok("init")
+    out = g.ok("status", "--verbose")
+    assert "not managed by guard" in out and "Bash(curl *)" in out
+
+
+def test_doctor_healthy(g: Runner):
+    g.ok("init")
+    out = g.ok("doctor")
+    snapshot("v2_doctor.txt", out, g.tmp)
+
+
+def test_doctor_fails_when_the_hook_executable_is_missing(g: Runner):
+    g.ok("init")
+    g.bin.unlink()
+    rc, out, _ = g.run("doctor")
+    assert rc == 1 and "fail-closed" in out
+
+
+def test_doctor_fails_when_the_hook_is_inside_the_project(g: Runner):
+    g.bin = g.proj / "bin" / "guard"
+    g.bin.parent.mkdir()
+    g.bin.write_text("#!/bin/sh\n")
+    g.bin.chmod(0o755)
+    g.ok("init")
+    rc, out, _ = g.run("doctor")
+    assert rc == 1 and "uv tool install" in out
+
+
+def test_explain_path(g: Runner):
+    g.ok("init")
+    outside = g.tmp / "elsewhere" / "f.txt"
+    out = g.ok("explain", str(outside))
+    assert "ASKS" in out and "read-only" in out
+    d = g.tmp / "data"
+    d.mkdir()
+    g.ok("allow", str(d), "--access", "edit")
+    out = g.ok("explain", str(d / "f.txt"))
+    assert "allowed without a prompt" in out and "BLOCKED" in out
+    inside = g.ok("explain", str(g.proj / "src" / "a.py"))
+    assert "inside the project" in inside and "writable" in inside
+
+
+def test_explain_command(g: Runner):
+    g.ok("init")
+    assert "DENIED" in g.ok("explain", "--command", "sudo ls")
+    assert "no rule" in g.ok("explain", "--command", "ls -la")
+
+
+def test_presets(g: Runner):
+    out = g.ok("presets")
+    assert "baseline" in out and "strict" in out
+    show = g.ok("preset", "show", "confirm-destructive")
+    assert "Bash(rm *)" in show
+
+
+# ---- propose / review --------------------------------------------------------------------------------
+
+
+def test_propose_then_review_and_accept(g: Runner):
+    g.ok("init")
+    script = g.home / "bin" / "status.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\n")
+    out = g.ok(
+        "propose",
+        str(g.user),
+        "--set",
+        f"statusLine.command={script}",
+        "--set",
+        "statusLine.type=command",
+        "--reason",
+        "show the branch",
     )
-    _, out, _ = cli.run("doctor")
-    assert "[warn] granted folder on system drive" in out
+    assert "guard review" in out
+    assert "statusLine" not in read(g.user)  # nothing changed yet
+    g.answers = [True, True]  # accept, then confirm the re-apply
+    out = g.ok("review")
+    assert "outside the sandbox" in out and "Accepted" in out
+    assert read(g.user)["statusLine"]["command"] == str(script)
+    assert list(g.queue.glob("*.json")) == []
+    st = json.loads(g.ok("status", "--json"))
+    assert any(p["path"] == str(script) for p in st["scopes"][0]["protected"])  # now protected
 
 
-def test_doctor_detects_inconsistent_state(cli: Runner, settings: Path):
-    cli.state_dir.mkdir()
-    (cli.state_dir / "state.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "grants": {
-                    "g": {
-                        "folder": None,
-                        "settings_file": str(settings),
-                        "profiles": [],
-                        "protect": [],
-                        "created_at": "x",
-                        "entries": [[str(settings), "missing-key"]],
-                    }
-                },
-                "files": {},
-            }
-        )
+def test_review_needs_a_keyboard(g: Runner):
+    g.ok("init")
+    g.ok("propose", str(g.user), "--set", "model=opus", "--reason", "r")
+    g.interactive = False
+    rc, _, err = g.run("review")
+    assert rc == 2 and "separate terminal" in err
+    g.interactive, g.in_claude = True, True
+    rc, _, err = g.run("review")
+    assert rc == 2
+    assert "model" not in read(g.user)
+
+
+def test_review_refuses_guard_owned_entries(g: Runner):
+    g.ok("init")
+    g.ok("propose", str(g.user), "--set", "sandbox.enabled=false", "--reason", "faster")
+    out = g.ok("review")
+    assert "Refused" in out and read(g.user)["sandbox"]["enabled"] is True
+
+
+def test_propose_rejects_other_files(g: Runner):
+    rc, _, err = g.run("propose", str(g.home / ".bashrc"), "--set", "a=1", "--reason", "r")
+    assert rc == 2 and "target" in err
+
+
+def test_ops_keep_their_order(g: Runner):
+    g.ok("init")
+    g.ok(
+        "propose",
+        str(g.user),
+        "--add",
+        "permissions.allow=Bash(make *)",
+        "--remove",
+        "permissions.allow=Bash(make *)",
+        "--reason",
+        "noop",
     )
-    rc, out, _ = cli.run("doctor")
-    assert rc == 1 and "[FAIL] state consistent" in out
+    [f] = g.queue.glob("*.json")
+    assert [o["kind"] for o in json.loads(f.read_text())["ops"]] == ["add", "remove"]
 
 
-def test_doctor_json(cli: Runner):
-    _, out, _ = cli.run("doctor", "--json")
-    assert {"level", "name", "detail"} <= set(json.loads(out)[0])
+# ---- the hook ----------------------------------------------------------------------------------------
 
 
-# ---- real entry point ------------------------------------------------------------------------
+def test_hook_edit_through_main(g: Runner, monkeypatch):
+    g.ok("init")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(g.proj))
+    payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(g.tmp / "x")}})
+    out = g.ok("hook", "edit", "--guard-home", str(g.gh), stdin=payload)
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "ask"
 
 
-def test_console_script_smoke(tmp_path: Path):
-    """Run the real entry point as a subprocess against a fake HOME and state dir."""
-    import subprocess
-    import sys
+def test_review_reapplies_so_new_scripts_are_protected(g: Runner):
+    from claude_guard.applied import load_applied
 
-    fake_home, proj, folder = tmp_path / "fakehome", tmp_path / "p", tmp_path / "f"
-    for d in (fake_home, proj, folder):
-        d.mkdir()
-    env = {**os.environ, "HOME": str(fake_home), "CLAUDE_GUARD_HOME": str(tmp_path / "gstate")}
-    code = "import sys; from claude_guard import main; sys.exit(main())"
-
-    def guard(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, "-c", code, *args],
-            check=False,
-            cwd=proj,
-            env=env,
-            capture_output=True,
-            text=True,
-            input="",
-        )
-
-    r = guard("allow", str(folder), "--dry-run")
-    assert r.returncode == 0, r.stderr
-    assert "Dry run" in r.stdout and not (proj / ".claude").exists()
-    r = guard("allow", str(folder))
-    assert r.returncode == 2 and "--yes" in r.stderr  # stdin is not a terminal
-    r = guard("allow", str(folder), "--yes")
-    assert r.returncode == 0, r.stderr
-    assert (proj / ".claude" / "settings.local.json").exists()
-    assert (tmp_path / "gstate" / "state.json").exists()
-    assert not (fake_home / ".claude").exists()  # local scope only
+    g.ok("init")
+    script = g.home / "bin" / "s.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\n")
+    g.ok("propose", str(g.user), "--set", f"apiKeyHelper={script}", "--reason", "key")
+    g.answers = [True, True]
+    g.ok("review")
+    protected = load_applied(g.gh).hook["scopes"]["*"]["protected"]
+    assert {"path": str(script), "ceiling": "ask"} in protected
 
 
-# ---- hook ------------------------------------------------------------------------------------
+def test_an_existing_project_key_is_reused(g: Runner):
+    g.ok("init")
+    g.policy.write_text(g.policy.read_text() + f'\n[projects."{g.proj}"]\ncommands.ask = ["x *"]\n')
+    d = g.tmp / "d"
+    d.mkdir()
+    g.ok("allow", str(d))
+    text = g.policy.read_text()
+    assert text.count("[projects.") == 1 and "~/repos/proj" not in text
 
 
-def hook_input(path: str, cwd: Path, tool: str = "Write") -> str:
-    return json.dumps(
-        {
-            "tool_name": tool,
-            "tool_input": {"file_path": path},
-            "cwd": str(cwd),
-            "permission_mode": "auto",
-        }
-    )
+def test_a_policy_only_change_is_still_saved(g: Runner):
+    g.ok("init")
+
+    def editor(path: Path) -> int:
+        path.write_text(path.read_text() + "# why the baseline: safety\n")
+        return 0
+
+    g.editor = editor
+    g.ok("edit")
+    assert "# why the baseline" in g.policy.read_text()
 
 
-def test_hook_cli_silent_inside_project_and_logs(cli: Runner):
-    rc, out, _ = cli.run(
-        "hook", "edit", "--state-dir", str(cli.state_dir),
-        stdin=hook_input(str(cli.proj / "a.txt"), cli.proj),
-    )  # fmt: skip
-    assert rc == 0 and out == ""
-    log = [json.loads(line) for line in (cli.state_dir / "hook.log").read_text().splitlines()]
-    assert log[0]["decision"] == "none" and log[0]["permission_mode"] == "auto"
-
-
-def test_hook_cli_asks_outside_with_claude_code_json(cli: Runner, tmp_path: Path):
-    rc, out, _ = cli.run(
-        "hook", "edit", "--state-dir", str(cli.state_dir),
-        stdin=hook_input(str(tmp_path / "elsewhere" / "a.txt"), cli.proj),
-    )  # fmt: skip
-    assert rc == 0
-    spec = json.loads(out)["hookSpecificOutput"]
-    assert spec["hookEventName"] == "PreToolUse" and spec["permissionDecision"] == "ask"
-    assert "guard allow" in spec["permissionDecisionReason"]
-
-
-def test_hook_cli_strict_denies(cli: Runner, tmp_path: Path):
-    _, out, _ = cli.run(
-        "hook", "edit", "--state-dir", str(cli.state_dir), "--unlisted", "deny",
-        stdin=hook_input(str(tmp_path / "elsewhere" / "a.txt"), cli.proj),
-    )  # fmt: skip
-    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_hook_cli_bad_input_fails_closed(cli: Runner):
-    rc, out, err = cli.run("hook", "edit", "--state-dir", str(cli.state_dir), stdin="not json")
-    assert rc == 2 and out == "" and "not valid JSON" in err
-
-
-def test_hook_cli_corrupt_state_fails_closed(cli: Runner):
-    cli.state_dir.mkdir()
-    (cli.state_dir / "state.json").write_text("{broken")
-    rc, out, _ = cli.run(
-        "hook", "edit", "--state-dir", str(cli.state_dir),
-        stdin=hook_input(str(cli.proj / "a.txt"), cli.proj),
-    )  # fmt: skip
-    assert rc != 0 and out == ""
-
-
-def test_allow_confine_edits_end_to_end(cli: Runner, target: Path):
-    rc, out, _ = cli.run("allow", "--global", "confine-edits", "--yes")
-    assert rc == 0
-    settings = cli.proj / ".claude" / "settings.local.json"
-    (h,) = read(settings)["hooks"]["PreToolUse"][0]["hooks"]
-    assert h["command"] == str(cli.hook_exe) and h["onFailure"] == "block"
-    rc, out, _ = cli.run("status")
-    assert "hook PreToolUse" in out and "--unlisted ask" in out
-    assert cli.run("revoke", "--global", "--yes")[0] == 0
-    assert not settings.exists() or "hooks" not in read(settings)
-
-
-def test_doctor_warns_about_auto_mode_without_hook(cli: Runner):
-    (cli.proj / ".claude" / "settings.local.json").write_text(
-        json.dumps({"permissions": {"defaultMode": "auto"}})
-    )
-    _, out, _ = cli.run("doctor")
-    assert "confine-edits" in out
-
-
-def test_doctor_ok_with_hook_and_fails_when_command_vanishes(cli: Runner):
-    cli.run("allow", "--global", "confine-edits", "--yes")
-    settings = cli.proj / ".claude" / "settings.local.json"
-    data = read(settings)
-    data["permissions"]["defaultMode"] = "auto"
-    settings.write_text(json.dumps(data, indent=2) + "\n")
-    rc, out, _ = cli.run("doctor")
-    assert (
-        "[ok]   Edit/Write hook" in out and "confine-edits" not in out.split("Edit/Write hook")[0]
-    )
-    cli.hook_exe.unlink()
-    rc, out, _ = cli.run("doctor")
-    assert rc == 1 and "[FAIL] Edit/Write hook command" in out
-
-
-# ---- explain ---------------------------------------------------------------------------------
-
-
-def test_explain_path_text_and_json(cli: Runner, target: Path):
-    cli.run("allow", str(target), "edit-ask", "--protect", "p/**", "--yes")
-    rc, out, _ = cli.run("explain", str(target / "p" / "f.txt"))
-    assert rc == 0
-    assert "Edit/Write tools" in out and "DENIED" in out and "Bash writes" in out
-    rc, out, _ = cli.run("explain", str(target / "f.txt"), "--json")
-    data = json.loads(out)
-    assert data["kind"] == "path"
-    assert {s["id"]: s["verdict"]["code"] for s in data["sections"]}["edit"] == "ask"
-
-
-def test_explain_command(cli: Runner, target: Path):
-    cli.run("allow", "--global", "floor", "--yes")
-    rc, out, _ = cli.run("explain", "--command", "sudo rm x")
-    assert rc == 0 and "DENIED" in out and "guard" in out
-    rc, out, _ = cli.run("explain", "--json", "--command", "echo hi")
-    assert json.loads(out)["sections"][0]["verdict"]["code"] == "none"
-
-
-def test_explain_relative_path_uses_cwd(cli: Runner):
-    rc, out, _ = cli.run("explain", "src/a.py")
-    assert rc == 0 and str(cli.proj / "src" / "a.py") in out
-
-
-def test_explain_bad_project(cli: Runner, tmp_path: Path):
-    rc, _, err = cli.run("explain", "x", "--project", str(tmp_path / "nope"))
-    assert rc == 2 and "does not exist" in err
+def test_explain_knows_the_builtin_protection_of_project_settings(g: Runner):
+    g.ok("init")
+    out = g.ok("explain", str(g.proj / ".claude" / "skills" / "s.md"))
+    assert "BLOCKED" in out and "built-in" in out
