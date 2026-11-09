@@ -12,18 +12,19 @@ Every fact has an ID (`VB-xx`), a status, the evidence, what in the tool relies 
 | **DOCUMENTED** | Stated in the Claude Code docs (captured in `claude-permissions.md`), never tested here. `guard` may rely on it, and says so. |
 | **UNVERIFIED** | An open question or an assumption. `guard` avoids depending on it, or depends on it in a way that fails safe. |
 
-Evidence names: **A, B, C, D** = `phase0-sandbox-tests.md` sessions; **E, F** = `phase0-followup-tests.md` sessions; **T1a, T1b, T2, T3, T3b, T4** = `phase0b-primitive-tests.md`; **HV** = `hook-verify.md`; **P12** = the earlier raw experiments in `claude-permissions.md` section 12. Raw results: `phase0_results.md`, `phase0_followup_results.md`, `phase0b_primitive_results.md`, `hook_verify_results.md`.
+Evidence names: **A, B, C, D** = `phase0-sandbox-tests.md` sessions; **E, F** = `phase0-followup-tests.md` sessions; **T1a, T1b, T2, T3, T3b, T4** = `phase0b-primitive-tests.md`; **HV** = `hook-verify.md`; **P2-A** to **P2-G** (and B2, D-acceptEdits, D-default) = `phase2-verification.md` sessions; **P12** = the earlier raw experiments in `claude-permissions.md` section 12. Raw results: `phase0_results.md`, `phase0_followup_results.md`, `phase0b_primitive_results.md`, `hook_verify_results.md`, `phase2_results.md`.
 
 ## Environment all VERIFIED facts were observed on
 
 | | |
 |---|---|
-| Claude Code | 2.1.319 |
+| Claude Code | 2.1.319 (phase 0, 0b, HV); 2.1.321 (phase 2) |
 | Platform | WSL2 (Linux 6.18.54.1-microsoft-standard-WSL2), shell zsh |
 | Sandbox | native (bubblewrap 0.6.1, socat installed) |
 | Filesystems | WSL home (ext4); `/mnt/d` and `/mnt/c` (drvfs / 9p) |
 | Permission modes | mostly **auto**; **default** and **acceptEdits** where stated |
-| Date | 2026-11-08 |
+| IDE | VS Code connected during phase 2 (affects how approval prompts show diffs) |
+| Date | 2026-11-08 (phase 0 to HV); 2026-11-09 (phase 2) |
 
 ## When to re-verify
 
@@ -53,10 +54,11 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Evidence:** A, B step 5, F, T1a, T1b.
 **Relied on by:** README ("suspect the sandbox first"); `guard explain` exists to answer this.
 
-### VB-S4 The default writable set (working directory, temp dirs)
-**Status:** DOCUMENTED
-**Fact:** Outside `allowWrite` the sandbox allows only the working directory, `$TMPDIR`, `/tmp/claude` and a few `/dev` paths. Claude reported this list about its own sandbox in sessions C and E, but no test wrote into the working directory.
-**Relied on by:** `explain` treats the project directory as writable and labels it "per docs; not tested".
+### VB-S4 The default writable set (working directory, `$TMPDIR`)
+**Status:** VERIFIED (for a session started at the project root)
+**Fact:** With the sandbox on and nothing granted, Bash can write in the working directory and its sub-folders, and in `$TMPDIR`, which Claude Code sets to `/tmp/claude-<uid>`. `/tmp` itself and `/tmp/claude` (named in the docs) are read-only. Everything else is read-only, including tool caches (VB-S16). Exceptions inside the working directory: VB-S15.
+**Evidence:** P2-A steps 2 to 8.
+**Relied on by:** the design's "open by default" category; `guard propose` writes proposals under `$TMPDIR`. Whether a session started in a sub-folder of a repo can write in the rest of the repo is open (VB-U15).
 
 ### VB-S5 Granted folders must exist before the session starts
 **Status:** VERIFIED
@@ -64,24 +66,24 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Evidence:** P12 (`claude-permissions.md` 12.4 item 1).
 **Relied on by:** `guard allow --create`; the "does not exist" warning; `doctor` "granted folder exists".
 
-### VB-S6 Live reload of `allowWrite` in a real settings file
-**Status:** VERIFIED (for `sandbox.filesystem.allowWrite` in `.claude/settings.local.json` only)
-**Fact:** Adding then removing an `allowWrite` entry in a real settings file takes effect in a running session with no restart. A file passed with `--settings` is read once at launch and never reloads (checked after a minute).
-**Evidence:** E (live); C (`--settings`, never applied).
-**Relied on by:** README "Applying changes"; the post-apply message. Live reload of other settings (rules, hooks, `denyWrite`, the user settings file) is not verified: see VB-U3.
+### VB-S6 Live reload of a real settings file
+**Status:** VERIFIED (for a project's `.claude/settings.local.json`; the user settings file is untested)
+**Fact:** Changes to `sandbox.filesystem.allowWrite`, `sandbox.filesystem.denyWrite`, `permissions.deny` rules and `hooks.PreToolUse` registrations in a real settings file take effect in a running session within about 15 seconds, with no restart. A file passed with `--settings` is read once at launch and never reloads (checked after a minute).
+**Evidence:** E (`allowWrite` live); P2-C steps C2 to C4 (deny rule, hook, `denyWrite` live); C (`--settings`, never applied).
+**Relied on by:** README "Applying changes"; the design's "no restart needed" after `guard apply`.
 
 ### VB-S7 `Edit` rules reach the sandbox
 **Status:** VERIFIED
-**Fact:** An `Edit` allow rule on a folder gives Bash write access there with no `allowWrite` entry. An `Edit` deny rule on a sub-path makes Bash writes there fail (`Read-only file system`).
-**Evidence:** B steps 1, 2 (allow); B step 5 (deny; steps 3 and 4 were stopped earlier by the classifier, VB-C1).
+**Fact:** An `Edit` allow rule on a folder gives Bash write access there with no `allowWrite` entry. An `Edit` deny rule on a sub-path makes Bash writes there fail (`Read-only file system`). This holds for `//abs` and `~/` paths; it does **not** hold for `//**/` glob patterns (VB-S14).
+**Evidence:** B steps 1, 2 (allow); B step 5 (deny; steps 3 and 4 were stopped earlier by the classifier, VB-C1); P2-B2 step 1 (`~/` form).
 **Relied on by:** `--protect` (emits only an `Edit` deny); the `edit` profile; `explain` ("Edit deny rules also become denyWrite").
 **Re-check:** session B.
 
 ### VB-S8 `denyWrite` wins over any allow, with no sub-path exception
 **Status:** VERIFIED
 **Fact:** With an `Edit` allow on a folder, `denyWrite` on the folder and `allowWrite` on `folder/.git`, Bash can write nowhere in the folder, including `.git`. The more specific allow does not override the deny. `git add` and `git commit` fail with `index.lock: Read-only file system`; `git clean`, `rm`, `mv` and `>` fail too. `git status` works.
-**Evidence:** T1a and T1b (identical results).
-**Relied on by:** `sandbox_deny_write`, profiles `bash-readonly` and `edit-ask`, and the git warning in `engine._conflicts`. Consequence: a Bash-read-only folder cannot be committed to from inside Claude.
+**Evidence:** T1a and T1b (identical results); P2-F (an `Edit` allow plus `denyWrite` on a `/mnt/c` folder, set from a project-local file: the Edit/Write tools created and edited files, Bash write and `mv` failed with `Read-only file system`).
+**Relied on by:** the design's `edit` access level; `sandbox_deny_write`, profiles `bash-readonly` and `edit-ask`, and the git warning in `engine._conflicts`. Consequence: a Bash-read-only folder cannot be committed to from inside Claude.
 **Re-check:** T1.
 
 ### VB-S9 The two `denyWrite` spellings behave the same
@@ -107,6 +109,30 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Fact:** `echo hi > $D/x` prompts with "Redirect target concatenation contains $/` — unanalyzable gap or substitution" in default and acceptEdits mode, whatever the sandbox allows.
 **Evidence:** D (all prompts).
 **Relied on by:** runbooks use literal paths only. Matters when writing any future test.
+
+### VB-S13 `Read` deny rules reach the sandbox: the path is hidden from Bash
+**Status:** VERIFIED
+**Fact:** A `Read(~/...)` deny rule makes the path invisible to Bash: `cat` reports `No such file or directory` although the file exists. This error is even less obviously a sandbox effect than `Read-only file system` (VB-S3).
+**Evidence:** P2-B2 step 2 (file confirmed present on disk afterwards).
+**Relied on by:** secrets protection for `~/` paths; `explain` should mention that a read deny shows up as "No such file or directory".
+
+### VB-S14 Deny rules with a `//**/` glob do not reach the sandbox
+**Status:** VERIFIED
+**Fact:** `Edit(//**/.claude/settings*.json)` and `Read(//**/.env.*)` block the Edit/Write/Read tools (VB-U4) but not Bash: a redirect overwrote a matching settings file and `cat` printed a matching `.env.local`. In auto mode the Bash overwrite produced an approval prompt (not a refusal); in default mode there was no prompt at all.
+**Evidence:** P2-B step 10 (auto, prompted, file overwritten); P2-B2 steps 3, 4 (default, no prompt).
+**Relied on by:** the design: glob rules cover the file tools only; anything Bash can reach must be named by a concrete path.
+
+### VB-S15 Built-in Bash protection inside the working directory
+**Status:** VERIFIED (behaviour); the exact list is OBSERVED, not documented here
+**Fact:** Inside the working directory the sandbox makes these read-only to Bash with no configuration: the whole `.claude/` folder (including `skills/`), and `.bashrc`, `.bash_profile`, `.profile`, `.zprofile`, `.zshrc`, `.gitconfig`, `.gitmodules`, `.ripgreprc`, `.mcp.json`, `.idea`, `.vscode`. Paths that do not exist appear inside the sandbox as placeholders (seen by `git status`), and are gone on the host afterwards. Errors: `permission denied`, `read-only file system`, or `File exists` (for `mkdir` on a placeholder). Claude Code also leaves a `.claude/.cc-writes/` folder on the host.
+**Evidence:** P2-A step 13 (placeholders listed); P2-D steps 16 to 19.
+**Relied on by:** the design: a project's own settings files are already safe from Bash. Whether the same applies to `.claude/` inside a granted folder is open (VB-U17).
+
+### VB-S16 Tool caches are read-only to Bash by default
+**Status:** VERIFIED
+**Fact:** With the sandbox on, cache folders outside the project are read-only, so tools that need them fail: `uv sync` failed with `Could not acquire lock ... Read-only file system (os error 30)` in the uv cache. Cache locations come from each tool's configuration (`uv cache dir`, `npm config get cache`, `$XDG_CACHE_HOME`), not a fixed `~/.cache`.
+**Evidence:** P2-A cache steps and `uv sync`.
+**Relied on by:** the `baseline` preset opens each tool's configured cache folder.
 
 ---
 
@@ -149,8 +175,8 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 
 ### VB-E7 The approval prompt does not show a hook's reason
 **Status:** VERIFIED
-**Fact:** When a hook returns `ask`, the prompt is the ordinary "Do you want to create/make this edit to X?" with no hook reason text.
-**Evidence:** T3 step 3; HV prompts 2 and 3.
+**Fact:** When a hook returns `ask`, the prompt is the ordinary "Do you want to create/make this edit to X?" with no hook reason text. Prompts from a hook `ask` and from an `Edit` ask rule look identical. With an IDE connected, the prompt opens the diff there ("Opened changes in Visual Studio Code ... Save file to continue…"), so the change can be inspected before approving. The first prompt for a folder offers "Yes, and always allow access to <folder> for this session" (but see VB-E10).
+**Evidence:** T3 step 3; HV prompts 2 and 3; P2-D steps 5, 12 to 15.
 **Relied on by:** README hook section; the decision log (`hook.log`) is where the reason is recorded.
 
 ### VB-E8 Claude Code asks about reads outside the working directories
@@ -158,6 +184,18 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Fact:** In auto mode a Read outside the working directories prompts, with options that can persist a setting (including `permissions.blockReadsOutsideWorkingDirectories`). `guard` does not manage this.
 **Evidence:** HV prompt 1.
 **Relied on by:** nothing; recorded because answering it can change the user's real settings.
+
+### VB-E9 The Edit/Write tools write anywhere in a project's `.claude/`, silently, in auto mode
+**Status:** VERIFIED
+**Fact:** In auto mode, with no rules, the Write and Edit tools created and changed files in the project's `.claude/skills`, `.claude/agents`, `.claude/commands`, and changed the shared `.claude/settings.json`, all with no prompt. Claude Code has no built-in protection of the project's settings from the file tools (contrast Bash, VB-S15).
+**Evidence:** P2-D steps 1 to 4.
+**Relied on by:** the design: editing skills stays frictionless; settings files need explicit `Edit` deny rules.
+
+### VB-E10 "Always allow for this session" does not bypass `ask`
+**Status:** VERIFIED
+**Fact:** After choosing "Yes, and always allow access to <folder> for this session" on a prompt caused by an `Edit` ask rule, the next edit to another file in that folder prompted again, offering only Yes and No. The same holds for a prompt caused by a hook returning `ask`. Claude Code processed the (parallel) calls one at a time, so the second check happened after the choice was made (the hook log shows the second call 40 seconds after the first).
+**Evidence:** P2-D steps 12 to 15, with `hook.log` timestamps.
+**Relied on by:** the design's `ask` access level and `ask` ceilings: every change needs its own approval.
 
 ---
 
@@ -180,9 +218,9 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 ## R. Permission rules
 
 ### VB-R1 `Bash(cmd *)` also matches the bare `cmd`
-**Status:** VERIFIED for deny rules in default mode. Ask and allow rules are assumed to use the same matcher (VB-U6).
-**Fact:** `Bash(uname *)`, `Bash(hostname *)` and `Bash(git stash list *)` denied the bare commands as well as ones with arguments.
-**Evidence:** T4 steps 1, 3, 7.
+**Status:** VERIFIED for deny rules (default mode) and ask rules (auto mode). Allow rules are assumed to use the same matcher.
+**Fact:** `Bash(uname *)`, `Bash(hostname *)` and `Bash(git stash list *)` denied the bare commands as well as ones with arguments. `Bash(pwd *)` in `ask` prompted for the bare `pwd`.
+**Evidence:** T4 steps 1, 3, 7; P2-B step 12.
 **Relied on by:** profiles emit only the `cmd *` form; `explain.bash_match`.
 
 ### VB-R2 A rule without `*` matches only the exact command
@@ -246,8 +284,20 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 
 ### VB-H6 Exit code 2, payload `cwd`, hook command resolution
 **Status:** DOCUMENTED
-**Fact:** Exit code 2 from a hook blocks the call (docs). The payload includes the session `cwd` (docs; `hook.decide` falls back to the process cwd, which is the same directory). `guard` registers an absolute path to its executable so it does not depend on `PATH` (a design choice; whether hooks inherit your `PATH` was not tested).
+**Fact:** Exit code 2 from a hook blocks the call (docs). `guard` registers an absolute path to its executable so it does not depend on `PATH` (a design choice; whether hooks inherit your `PATH` was not tested). The payload `cwd` and `CLAUDE_PROJECT_DIR` are now verified: VB-H7.
 **Relied on by:** `hook.decide`, `cli._hook_command`.
+
+### VB-H7 `CLAUDE_PROJECT_DIR` and the payload `cwd` are the launch folder
+**Status:** VERIFIED
+**Fact:** Every hook call has `CLAUDE_PROJECT_DIR` set, equal to the payload `cwd` and the hook process's working directory: the folder Claude was started in. Started in a sub-folder of a git repo, all three are the sub-folder, not the repo root (even though the root's settings apply, VB-P5).
+**Evidence:** P2-C, P2-D and P2-E `hook.log` lines.
+**Relied on by:** the design's hook: the project is the git root containing `CLAUDE_PROJECT_DIR`, or `CLAUDE_PROJECT_DIR` itself.
+
+### VB-H8 Hook decisions in every permission mode, and for NotebookEdit
+**Status:** VERIFIED
+**Fact:** A hook `deny` blocks and a hook `ask` prompts identically in auto, acceptEdits and default mode. The hook runs for NotebookEdit (with `tool_input.notebook_path`). A hook can refuse a Write that would overwrite an existing file while letting new-file Writes and Edits through: it runs before the write, so the file's existence is visible. There is no MultiEdit tool in Claude Code 2.1.321.
+**Evidence:** P2-D steps 5 to 10 (auto), D-acceptEdits, D-default; `hook.log`.
+**Relied on by:** protected paths (hook `deny`/`ask` in every mode); the `modify` access level.
 
 ---
 
@@ -271,8 +321,26 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 ### VB-P4 The sandbox works on Windows drives mounted in WSL
 **Status:** VERIFIED
 **Fact:** `/mnt/d` and `/mnt/c` (drvfs/9p) behave like the WSL home for every sandbox fact above.
-**Evidence:** A, D, F.
+**Evidence:** A, D, F; P2-F (`edit` access on `/mnt/c` from a project-local file).
 **Relied on by:** `PathPolicy` allows these drives, with the refusals described in the README.
+
+### VB-P5 A session started in a sub-folder reads the repo root's project settings too
+**Status:** VERIFIED
+**Fact:** Started in `<repo>/sub`, a session applied deny rules from both `<repo>/sub/.claude/settings.local.json` and `<repo>/.claude/settings.local.json`.
+**Evidence:** P2-E steps 1, 2.
+**Relied on by:** the design writes project grants to the git root's local file. Open: whether folders above the git root are also read (VB-U14).
+
+### VB-P6 `disableBypassPermissionsMode` refuses bypass silently
+**Status:** VERIFIED
+**Fact:** With `permissions.disableBypassPermissionsMode: "disable"` (here from a `--settings` file), both `--permission-mode bypassPermissions` and `--dangerously-skip-permissions` start Claude with no warning in the user's default mode (auto here: footer "auto mode on", a test Write labelled "Allowed by auto mode"), and shift+tab does not offer bypass mode.
+**Evidence:** P2-G launch checks.
+**Relied on by:** `baseline`; `doctor` should say that bypass requests fall back silently.
+
+### VB-P7 `!` commands run outside the sandbox, with no terminal
+**Status:** VERIFIED
+**Fact:** A command the user types with the `!` prefix inside a session ran outside the sandbox (it wrote to a folder the sandbox makes read-only), but stdin and stdout were not terminals and it received no keyboard input (a `read` timed out). Its output goes into the conversation. Claude's own Bash calls also have no terminal, and both have `CLAUDECODE=1`.
+**Evidence:** P2-G `tty-probe` run by Claude (step 3) and with `!`.
+**Relied on by:** the design: `guard review` must run in a separate terminal; it cannot confirm through `!`, nor tell a `!` run from Claude's own call.
 
 ---
 
@@ -282,17 +350,21 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 |---|---|---|
 | VB-U1 | Prefix-less (relative) sandbox paths. | `guard` always emits absolute paths. `explain` reports relative entries as unevaluable. |
 | VB-U2 | Does an `Edit` **ask** rule alone (no allow) merge into `allowWrite`? T2 had explicit `allowWrite`. | `edit-ask` adds `denyWrite`, so the answer does not matter there. |
-| VB-U3 | Live reload of anything other than `allowWrite` in `settings.local.json`: permission rules, `denyWrite`, hooks, the user settings file. | README claims live reload only for sandbox paths. HV and T-tests set everything before launch. After `guard allow`, a restart is the safe assumption for hooks and rules. |
-| VB-U4 | `Edit(~/...)` deny patterns (`floor`) and `Read(~/...)` / `Read(//**/.env)` (`secrets`) actually match. | Profiles use them as documented. No test confirmed they block. Worth a short test before relying on `floor`/`secrets`. |
-| VB-U5 | The `lock` settings: `sandbox.enabled=true` is VERIFIED to enable the sandbox (every test config set it). `sandbox.allowUnsandboxedCommands=false` was present in every test config but its own effect (Claude cannot retry a blocked command outside the sandbox) was never tested. `permissions.disableBypassPermissionsMode="disable"` was never tested. | `guard` writes them as documented. |
-| VB-U6 | Ask and allow `Bash(cmd *)` rules use the same bare-command matching as deny (VB-R1), and `ask` rules (`git-destructive`, `confirm-destructive`) prompt even for sandboxed commands. | Assumed; `explain` reports them as ask. |
-| VB-U7 | The hook fires for `MultiEdit` and `NotebookEdit` (matcher names only). | Registered anyway; `decide` handles both tools' path keys. |
+| VB-U3 | **Resolved** (P2-C): rules, hooks and `denyWrite` reload live from a project-local file (VB-S6). Still open: live reload of the user settings file, which the runbooks do not touch. | Very likely the same; `guard` does not tell the user to restart. |
+| VB-U4 | **Resolved** (P2-B): `Edit(~/...)`, `Read(~/...)`, `Read(//**/.env)`, `Read(//**/.env.*)` and `Edit(//**/.claude/settings*.json)` all block the file tools. For Bash: `~/` and `//abs` forms reach the sandbox (VB-S7, VB-S13), `//**/` globs do not (VB-S14). | Globs cover the file tools; concrete paths are emitted where Bash must be stopped. |
+| VB-U5 | The `lock` settings. `sandbox.enabled=true`: VERIFIED. `disableBypassPermissionsMode="disable"`: VERIFIED (VB-P6). Still open: `sandbox.allowUnsandboxedCommands=false` refusing an unsandboxed retry. The one attempt (P2-G step 2, auto mode) was stopped by the classifier first; a re-run in default mode is needed. | `guard` writes it as documented. |
+| VB-U6 | **Resolved** (P2-B): a `Bash(rm *)` ask rule prompts for a sandboxed `rm` the sandbox would allow, and ask rules match the bare command (VB-R1). Tested in auto mode. | `confirm-destructive`, `git-destructive` rely on it. |
+| VB-U7 | **Resolved** (P2-D): the hook fires for NotebookEdit (VB-H8). MultiEdit does not exist in 2.1.321. | `MultiEdit` stays in the matcher; harmless. |
 | VB-U8 | Hook `updatedInput` schema. | Not used. |
-| VB-U9 | Whether the sandbox writes to the working directory by default (VB-S4). | `explain` labels it "per docs; not tested". |
+| VB-U9 | **Resolved** (P2-A): the working directory is writable by default (VB-S4). | `explain` can drop "not tested". |
 | VB-U10 | Whether `git` could run unsandboxed in a Bash-read-only folder via `sandbox.excludedCommands`. | Not used. `bash-readonly` warns that git writes fail. |
-| VB-U11 | Meaning of a wildcard-free `Edit(//dir)` rule (does it cover children?). | `explain` matches such rules exactly and does not guess. |
+| VB-U11 | Meaning of a wildcard-free `Edit(//dir)` rule (does it cover children?). | `explain` matches such rules exactly and does not guess. v2 never relies on it: folders get `//p/**`, files `//p` (`rules.concrete_patterns`). |
 | VB-U12 | Case-insensitive matching on drvfs paths. | The hook matches `/mnt/<letter>/` paths case-insensitively (errs toward blocking). |
-| VB-U13 | Network restrictions, cache writes outside allowed folders, performance over 9p, macOS and native Linux. | Out of scope; `guard` does not manage them. |
+| VB-U13 | Network restrictions, performance over 9p, macOS and native Linux. (Cache writes: resolved, VB-S16.) | Out of scope; `guard` does not manage them. |
+| VB-U14 | Whether a session reads `.claude/settings*.json` from folders above the git root as well (VB-P5 shows the launch folder and the git root). | `guard` only writes to the git root's file, which is read either way. |
+| VB-U15 | For a session started in a sub-folder of a repo, whether Bash can write in the rest of the repo by default, or only in the launch folder. | The hook treats the git root as the project; `explain` says Bash may be limited to the launch folder. |
+| VB-U16 | Whether `allowUnsandboxedCommands=false` refuses outright or prompts (see VB-U5). | Doctor recommends it; nothing depends on the exact behaviour. |
+| VB-U17 | Whether the built-in Bash protection of `.claude/` and dotfiles (VB-S15) applies only in the working directory, or also inside granted folders. | `guard` emits explicit `denyWrite` entries for settings files inside grants. |
 
 ---
 
@@ -309,7 +381,8 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 | VB-H1 to H4, E6, E7 | T3, T3b | same |
 | VB-R1, R2 | T4 | same |
 | VB-H1 to H3 with the real registration, E5 | `hook-verify.md` | its own setup and cleanup |
-| VB-U4, U5, U6 | not yet written | would need a short runbook (suggested before relying on `floor`, `secrets`, `lock`) |
+| VB-S4, S13 to S16, E7, E9, E10, H7, H8, P5 to P7, R1 (ask), and the resolved U3 to U7, U9 | `phase2-verification.md` sessions A to G | `scripts/phase2/setup.sh [windows dir]`, `reload.sh`, `cleanup.sh` |
+| VB-U5 (`allowUnsandboxedCommands`), U14, U15, U17 | not yet written | a short follow-up: G2 in default mode; a session in a repo sub-folder writing to the repo root; a grant containing a `.claude/` folder |
 
 ## What each tool feature rests on
 
@@ -320,6 +393,20 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 | `--protect`, self-protection | VB-S7, E5, R3 |
 | `confine-edits` hook | VB-E1, H1 to H5, E7 |
 | `confirm-destructive`, `git-destructive` | VB-S11, R1, U6 |
-| `floor`, `secrets`, `lock` | VB-R4, U4, U5 (documented only) |
-| `guard explain` | VB-R1 to R5, S4, S7, S8, C1 |
-| `doctor` | VB-H3, P2, S5 |
+| `floor`, `secrets`, `lock` | VB-R4, S13, S14, P6, U5 (`allowUnsandboxedCommands` still open) |
+| `guard explain` | VB-R1 to R5, S4, S7, S8, S13, C1 |
+| `doctor` | VB-H3, P2, P6, S5 |
+
+v2 design (`design.md`):
+
+| Feature | Facts |
+|---|---|
+| "Open by default", caches, proposals in `$TMPDIR` | VB-S4, S16 |
+| Access levels `full`, `edit`, `modify`, `ask`, `bash`, `deny` | VB-S1, S7, S8, S10, E3, E4, E5, E10, H8 |
+| Protected paths and ceilings | VB-H2, H8, E5, E10 |
+| Locked settings files | VB-E5, E9, S14, S15, U17 |
+| Secrets | VB-S13, S14 |
+| Hook project root | VB-H7, P5, U15 |
+| No restart after apply | VB-S6 |
+| `guard review` in a separate terminal | VB-P7 |
+| `baseline` lock settings | VB-P6, U5 |
