@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from claude_guard.cli import Env, main
-from claude_guard.paths import PathPolicy
+from claude_guard.pathsafety import PathPolicy
 
 SNAP_DIR = Path(__file__).parent / "snapshots"
 

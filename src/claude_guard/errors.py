@@ -26,3 +26,11 @@ class ProfileError(GuardError):
 
 class StateError(GuardError):
     """The state file is malformed or inconsistent."""
+
+
+class PolicyError(GuardError):
+    """policy.toml is invalid: bad syntax, unknown keys or values, unsafe paths."""
+
+
+class CompileError(GuardError):
+    """The policy is valid but cannot be enforced as written (conflicts, ceilings, locked paths)."""

@@ -14,7 +14,7 @@ from typing import TextIO
 
 from .engine import Guard, Plan
 from .errors import GuardError
-from .paths import PathPolicy
+from .pathsafety import PathPolicy
 from .profiles import ProfileSet, load_profiles
 from .settings_view import (
     build_status,
@@ -72,7 +72,7 @@ class Env:
 
 
 def _detected_roots() -> set[Path]:
-    from .paths import detect_drive_roots
+    from .pathsafety import detect_drive_roots
 
     return detect_drive_roots()
 

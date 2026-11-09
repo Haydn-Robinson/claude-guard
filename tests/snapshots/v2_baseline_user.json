@@ -1,0 +1,291 @@
+{
+  "entries": [
+    {
+      "kind": "array",
+      "path": "sandbox.filesystem.allowWrite",
+      "value": "<TMP>/home/.cache/uv"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/mnt/c/Windows/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/mnt/c/Program Files/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/mnt/c/Program Files (x86)/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/mnt/c/ProgramData/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/home/.claude/settings.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/home/.claude/settings.local.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/home/.claude.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(//**/.claude/settings.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(//**/.claude/settings.local.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(//**/.mcp.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/etc/claude-code/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Edit(/<TMP>/home/.config/claude-guard/**)"
+    },
+    {
+      "kind": "array",
+      "path": "sandbox.filesystem.denyWrite",
+      "value": "<TMP>/home/.cache/uv/.claude/settings.json"
+    },
+    {
+      "kind": "array",
+      "path": "sandbox.filesystem.denyWrite",
+      "value": "<TMP>/home/.cache/uv/.claude/settings.local.json"
+    },
+    {
+      "kind": "array",
+      "path": "sandbox.filesystem.denyWrite",
+      "value": "<TMP>/home/.cache/uv/.mcp.json"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Bash(sudo *)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.ssh/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.aws/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(//**/.env)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(//**/.env.*)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.config/gh/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.kube/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.docker/config.json)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.netrc)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.git-credentials)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.npmrc)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.pypirc)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.config/gcloud/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.azure/**)"
+    },
+    {
+      "kind": "array",
+      "path": "permissions.deny",
+      "value": "Read(/<TMP>/home/.claude/.credentials.json)"
+    },
+    {
+      "kind": "scalar",
+      "path": "sandbox.enabled",
+      "value": true
+    },
+    {
+      "kind": "scalar",
+      "path": "sandbox.allowUnsandboxedCommands",
+      "value": false
+    },
+    {
+      "kind": "scalar",
+      "path": "permissions.disableBypassPermissionsMode",
+      "value": "disable"
+    },
+    {
+      "kind": "array",
+      "path": "hooks.PreToolUse",
+      "value": {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/guard",
+            "args": [
+              "hook",
+              "edit",
+              "--guard-home",
+              "<TMP>/home/.config/claude-guard"
+            ],
+            "onFailure": "block"
+          }
+        ]
+      }
+    }
+  ],
+  "hook": {
+    "version": 1,
+    "home": "<TMP>/home",
+    "scopes": {
+      "*": {
+        "closed": "ask",
+        "grants": [
+          {
+            "path": "<TMP>/home/.cache/uv",
+            "access": "bash",
+            "protect": []
+          }
+        ],
+        "protected": [
+          {
+            "path": "<TMP>/mnt/c/Windows",
+            "ceiling": "deny"
+          },
+          {
+            "path": "<TMP>/mnt/c/Program Files",
+            "ceiling": "deny"
+          },
+          {
+            "path": "<TMP>/mnt/c/Program Files (x86)",
+            "ceiling": "deny"
+          },
+          {
+            "path": "<TMP>/mnt/c/ProgramData",
+            "ceiling": "deny"
+          },
+          {
+            "path": "/etc",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.ssh",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.aws",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.gnupg",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.bashrc",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.bash_profile",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.profile",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.zshrc",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.zprofile",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/.zshenv",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/home/bin/status.sh",
+            "ceiling": "ask"
+          },
+          {
+            "path": "<TMP>/mnt/c",
+            "ceiling": "edit"
+          },
+          {
+            "path": "<TMP>/mnt/d",
+            "ceiling": "edit"
+          }
+        ],
+        "locked": [
+          "<TMP>/home/.claude/settings.json",
+          "<TMP>/home/.claude/settings.local.json",
+          "<TMP>/home/.claude.json",
+          "**/.claude/settings.json",
+          "**/.claude/settings.local.json",
+          "**/.mcp.json",
+          "<TMP>/etc/claude-code/",
+          "<TMP>/home/.config/claude-guard/"
+        ]
+      }
+    }
+  },
+  "warnings": []
+}

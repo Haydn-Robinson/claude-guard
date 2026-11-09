@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from claude_guard.engine import Guard
-from claude_guard.paths import PathPolicy
+from claude_guard.pathsafety import PathPolicy
 from claude_guard.profiles import load_profiles
 
 

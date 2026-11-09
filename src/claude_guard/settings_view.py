@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .engine import ALLOW_WRITE, PERM_ALLOW, PERM_ASK, PERM_DENY
-from .paths import PathPolicy
+from .pathsafety import PathPolicy
 from .state import load_state
 
 TRACKED_ARRAYS = (PERM_ALLOW, PERM_ASK, PERM_DENY, ALLOW_WRITE)

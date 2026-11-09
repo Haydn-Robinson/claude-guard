@@ -38,14 +38,13 @@ from __future__ import annotations
 
 import copy
 import json
-import os
-import shutil
-import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .applied import atomic_write, backup_file, timestamp
 from .errors import StateError
+
+__all__ = ["atomic_write", "backup_file", "timestamp"]
 
 STATE_VERSION = 1
 
@@ -73,39 +72,6 @@ def load_state(path: Path) -> dict[str, Any]:
 
 def clone(state: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(state)
-
-
-def timestamp(now: datetime | None = None) -> str:
-    return (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%S%fZ")
-
-
-def backup_file(path: Path, backup_dir: Path, now: datetime | None = None) -> Path | None:
-    """Copy ``path`` into ``backup_dir`` with a timestamped name. No-op if it does not exist."""
-    if not path.exists():
-        return None
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    safe = str(path).strip("/").replace("/", "__").replace(" ", "_")
-    dest = backup_dir / f"{timestamp(now)}-{safe}.bak"
-    shutil.copy2(path, dest)
-    return dest
-
-
-def atomic_write(path: Path, text: str) -> None:
-    """Write via temp file + rename in the same directory; follows symlinks; keeps file mode."""
-    target = Path(os.path.realpath(path))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if target.exists():
-            shutil.copymode(target, tmp)
-        os.replace(tmp, target)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:

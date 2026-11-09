@@ -1,0 +1,112 @@
+# Presets shipped with claude-guard. Same schema as a scope in policy.toml (design section 5).
+# A preset of yours with the same name, under [presets.<name>] in policy.toml, replaces one of these.
+#
+# Paths in `locked` and `read.deny` ending in / are folders (everything inside is covered);
+# without it, an existing folder is detected and anything else is matched exactly.
+#
+# Placeholders, expanded on this machine when the policy is compiled. A path that starts with one
+# becomes one entry per value, or none if there is no value (for example {drives} outside WSL):
+#   {system_drive}      WSL: the Windows system drive, e.g. /mnt/c
+#   {drives}            WSL: every mounted /mnt/<letter>
+#   {caches}            each installed tool's cache folder (uv, npm, pip, ...), asked from the tool
+#   {settings_scripts}  files that Claude Code settings run (hooks, statusLine, apiKeyHelper)
+#   {guard_home}        claude-guard's own folder (policy.toml, applied.json)
+#   {managed_settings}  Claude Code's managed settings folder
+
+[baseline]
+# VB-P6: bypass mode is refused (silently). VB-U5: allowUnsandboxedCommands as documented.
+raw.settings = [
+  { path = "sandbox.enabled", value = true },
+  { path = "sandbox.allowUnsandboxedCommands", value = false },
+  { path = "permissions.disableBypassPermissionsMode", value = "disable" },
+]
+# Register the Edit/Write hook: a write outside the project and every grant asks (VB-H8).
+closed = "ask"
+
+# Claude Code's and guard's own settings: changed only through `guard propose` / `guard review`.
+# VB-E9: the file tools write a project's .claude/ freely, so the settings files need deny rules.
+# VB-S14: the **/ globs stop only the file tools; inside grants Bash can write, guard also emits
+# concrete denyWrite paths (VB-U17).
+locked = [
+  "~/.claude/settings.json",
+  "~/.claude/settings.local.json",
+  "~/.claude.json",
+  "**/.claude/settings.json",
+  "**/.claude/settings.local.json",
+  "**/.mcp.json",
+  "{managed_settings}/",
+  "{guard_home}/",
+]
+
+protected = [
+  # Windows system folders: no grant can open them (VB-E5).
+  { path = "{system_drive}/Windows", ceiling = "deny" },
+  { path = "{system_drive}/Program Files", ceiling = "deny" },
+  { path = "{system_drive}/Program Files (x86)", ceiling = "deny" },
+  { path = "{system_drive}/ProgramData", ceiling = "deny" },
+  # System config, credentials and shell startup files: grantable up to `ask` at most.
+  { path = "/etc", ceiling = "ask" },
+  { path = "~/.ssh", ceiling = "ask" },
+  { path = "~/.aws", ceiling = "ask" },
+  { path = "~/.gnupg", ceiling = "ask" },
+  { path = "~/.bashrc", ceiling = "ask" },
+  { path = "~/.bash_profile", ceiling = "ask" },
+  { path = "~/.profile", ceiling = "ask" },
+  { path = "~/.zshrc", ceiling = "ask" },
+  { path = "~/.zprofile", ceiling = "ask" },
+  { path = "~/.zshenv", ceiling = "ask" },
+  # Scripts that settings run execute outside the sandbox: editing one is like editing settings.
+  { path = "{settings_scripts}", ceiling = "ask" },
+  # Windows drives: edit at most, so Bash can never delete or rename there (VB-S8, VB-P4).
+  { path = "{drives}", ceiling = "edit" },
+]
+
+# Secrets. The ~/ entries also hide the files from Bash (VB-S13); the **/ globs stop only the
+# file tools (VB-S14), so a project's own .env files stay readable through Bash (a decision).
+read.deny = [
+  "~/.ssh/",
+  "~/.aws/",
+  "**/.env",
+  "**/.env.*",
+  "~/.config/gh/",
+  "~/.kube/",
+  "~/.docker/config.json",
+  "~/.netrc",
+  "~/.git-credentials",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.config/gcloud/",
+  "~/.azure/",
+  "~/.claude/.credentials.json",
+]
+
+# Tool caches: build tools need to write there, the file tools do not (VB-S16).
+write = [{ path = "{caches}", access = "bash" }]
+
+# Advisory only: command rules match text (VB-R5).
+commands.deny = ["sudo *"]
+
+# VB-R1: "cmd *" also matches the bare command; ask rules prompt for sandboxed commands (VB-U6).
+[confirm-destructive]
+commands.ask = ["rm *", "rmdir *", "unlink *", "shred *"]
+
+[git-destructive]
+commands.ask = [
+  "git reset --hard *",
+  "git clean *",
+  "git checkout -- *",
+  "git checkout . *",
+  "git restore *",
+  "git push --force *",
+  "git push -f *",
+  "git push --force-with-lease *",
+  "git branch -D *",
+  "git stash drop *",
+  "git stash clear *",
+  "git rebase *",
+  "git filter-branch *",
+]
+
+# The hook refuses (instead of asking about) Edit/Write outside the project and every grant.
+[strict]
+closed = "deny"

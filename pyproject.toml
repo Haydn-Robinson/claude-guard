@@ -7,7 +7,9 @@ authors = [
     { name = "Haydn Robinson", email = "haydn.robinson96@gmail.com" }
 ]
 requires-python = ">=3.15"
-dependencies = []
+dependencies = [
+    "tomlkit>=0.15.2",
+]
 
 [project.scripts]
 guard = "claude_guard:main"

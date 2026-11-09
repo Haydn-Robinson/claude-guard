@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from claude_guard.errors import UnsafeFolderError
-from claude_guard.paths import PathPolicy, detect_drive_roots, rule_path, sandbox_path
+from claude_guard.pathsafety import PathPolicy, detect_drive_roots
+from claude_guard.rules import rule_path, sandbox_path
 
 
 def test_path_forms_with_spaces():

@@ -20,8 +20,9 @@ from typing import Any
 
 from .errors import GuardError, SettingsError
 from .hook import HOOK_MATCHER
-from .paths import PathPolicy, rule_path, sandbox_path
+from .pathsafety import PathPolicy
 from .profiles import ProfileSet
+from .rules import rule_path, sandbox_path
 from .settingsfile import SettingsDoc
 from .state import atomic_write, backup_file, clone, empty_state, load_state, save_state
 
