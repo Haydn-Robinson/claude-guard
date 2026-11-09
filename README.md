@@ -2,7 +2,7 @@
 
 Keep Claude Code's writes where they belong. By default Claude can read freely but write only inside the current project. You grant more, narrowly, with one command. Important paths are protected, and Claude Code's own settings change only through proposals you review.
 
-> Verified on WSL2 with Claude Code 2.1.321. The design and the reasons behind it are in [`docs/design.md`](docs/design.md).
+> The Claude Code behaviour `guard` relies on was verified on WSL2 with Claude Code 2.1.321 ([`docs/verified-behaviour.md`](docs/verified-behaviour.md)). `guard` itself is tested against temporary homes; it has not yet been exercised in a live Claude session. The design and the reasons behind it are in [`docs/design.md`](docs/design.md).
 
 ## Contents
 
@@ -55,7 +55,7 @@ Install it as a tool rather than running it from a checkout. The hook is registe
 |---|---|---|
 | **Open** | Reads anywhere, except secrets. Writes in the current project, in `$TMPDIR` and in tool caches | allowed, no prompt |
 | **Closed** | Writes anywhere else | Bash: read-only. Edit/Write tools: **ask** |
-| **Protected** | Windows drives and system folders, `/etc`, credentials, shell startup files, scripts that Claude Code settings run | Bash: read-only. Edit/Write tools: **refused** outside the project, **asked** inside it |
+| **Protected** | Windows drives and system folders, `/etc`, credentials, shell startup files, scripts that Claude Code settings run | Bash: read-only (with [exceptions](#what-this-protects-against-and-what-it-does-not) inside projects). Edit/Write tools: **refused** outside the project, **asked** inside it |
 
 A **grant** opens a closed path. A protected path can be granted too, but only up to its **ceiling**: the most any grant may give it (see [Protected paths](#protect-a-path-or-change-a-ceiling)).
 
@@ -68,7 +68,7 @@ A grant gives one folder one access level. Claude writes in two ways, and each l
 | `--access` | Edit/Write tools | Bash | Use it for |
 |---|---|---|---|
 | `full` (default) | write, no prompt | create, change, rename, delete | a folder Claude works in like the project |
-| `bash` | ask (as if closed) | create, change, rename, delete | build outputs and caches the file tools do not need |
+| `bash` | treated as closed: ask (refused with `strict`) | create, change, rename, delete | build outputs and caches the file tools do not need |
 | `edit` | write, no prompt | read-only | "edit files but never delete or rename them" |
 | `modify` | edit existing files only; no new files, no whole-file rewrites | read-only | config you want changed in place, not replaced |
 | `ask` | prompt for every change, even in auto mode | read-only | folders where every change needs your eyes |
@@ -99,9 +99,9 @@ Everything you configure lives in one file, `~/.config/claude-guard/policy.toml`
 | `[everywhere]` | `~/.claude/settings.json` |
 | `[projects."<dir>"]` | `<dir>/.claude/settings.local.json` (read only in that project; not committed) |
 
-Think of it like source code and a build: you edit the policy, and the settings entries are the output. If someone edits a generated entry by hand, `guard status` and `guard doctor` report the drift, and the next apply restores it, shown in the diff first. Entries you wrote yourself are never touched; `status` lists them as "not managed by guard". The policy lives outside every project, so a cloned repository cannot grant itself access.
+Think of it like source code and a build: you edit the policy, and the settings entries are the output. If someone edits a generated entry by hand, `guard status` and `guard doctor` report the drift, and the next apply restores it, shown in the diff first. Entries you wrote yourself are never touched; `guard status --verbose` lists them as "not managed by guard". The policy lives outside every project, so a cloned repository cannot grant itself access.
 
-**Changes apply live.** A running Claude session picks up new settings within seconds. No restart needed.
+**Changes apply live.** A running Claude session picks up new settings within seconds, with no restart. This was verified for a project's settings file; the user settings file is expected to behave the same.
 
 ## Getting started
 
@@ -109,7 +109,7 @@ Think of it like source code and a build: you edit the policy, and the settings 
 guard init
 ```
 
-`init` creates `policy.toml` containing:
+`init` creates `policy.toml` containing (besides a few comments):
 
 ```toml
 version = 1
@@ -127,7 +127,7 @@ It then explains what the baseline does, shows the diff to your settings, asks b
 | Claude Code's settings files, `~/.claude.json`, every project's `.claude/settings*.json` and `.mcp.json`, the managed settings folder and guard's own folder are **locked** | deny rules |
 | Windows system folders (`Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`) can never be written | protected, ceiling `deny` |
 | `/etc`, `~/.ssh`, `~/.aws`, `~/.gnupg`, shell startup files and scripts that settings run: grantable up to `ask` at most | protected, ceiling `ask` |
-| Windows drives (`/mnt/<letter>`): grantable up to `edit` at most, so Bash can never delete there | protected, ceiling `edit` |
+| Windows drives (`/mnt/<letter>`): grantable up to `edit` at most, so no grant lets Bash delete there (a project that lives on a drive is the exception: see [below](#a-project-on-a-windows-drive)) | protected, ceiling `edit` |
 | Secrets cannot be read: `~/.ssh`, `~/.aws`, `.env` files, and the credential files of gh, kube, docker, git, npm, pypi, gcloud, azure and Claude | `Read` deny rules |
 | Tool caches (asked from each tool: `uv cache dir`, `npm config get cache`, ...) are writable by Bash, so builds work | `bash` access |
 | `sudo` is refused (advisory: text matching) | command rule |
@@ -145,7 +145,7 @@ cd ~/repos/myproj
 guard allow ~/data/myproj-output
 ```
 
-This gives `full` access to that folder, for sessions in `~/repos/myproj` only. It adds one line to `policy.toml` and one entry to `~/repos/myproj/.claude/settings.local.json`; no other project is affected.
+This gives `full` access to that folder, for sessions in `~/repos/myproj` only. It adds the grant to the project's section of `policy.toml` (creating the section if needed) and, to `~/repos/myproj/.claude/settings.local.json`, one `Edit` allow rule plus `denyWrite` entries for any Claude Code settings files inside the folder (`.claude/settings*.json`, `.mcp.json`), since Bash can write there. No other project is affected.
 
 - **Every session:** add `--everywhere`.
 - **The folder does not exist yet:** add `--create`. The sandbox cannot create a granted folder, and a grant on a missing folder is reported as a warning.
@@ -184,9 +184,11 @@ guard revoke ~/notes --everywhere
 ### Protect a path, or change a ceiling
 
 ```bash
-guard protect ~/bin --ceiling ask                # nothing may get more than `ask` there
-guard protect /mnt/d/archive --ceiling deny      # nothing may ever write there
+guard protect ~/bin --ceiling ask --everywhere   # nothing may get more than `ask` there
+guard protect /mnt/d/archive --ceiling deny      # this project only: nothing may write there
 ```
+
+Like `allow`, `protect` applies to the current project unless you add `--everywhere` or `--project DIR`.
 
 A protected path with no grant behaves like the baseline's: Bash cannot write, and the Edit/Write tools are refused outside the project (asked inside it). Ceiling `deny` is enforced by deny rules, so no grant can open the path.
 
@@ -207,6 +209,15 @@ presets = ["baseline", "confirm-destructive", "git-destructive"]
 ```
 
 On save, `guard edit` validates the file, then shows the diff and asks. `confirm-destructive` makes `rm`, `rmdir`, `unlink` and `shred` ask; `git-destructive` does the same for history-destroying git commands (`reset --hard`, `clean`, `push --force`, `branch -D`, `rebase`, ...). These match command text, so they are a guardrail; the sandbox is what limits where a delete can land.
+
+### A project on a Windows drive
+
+The whole drive is protected (ceiling `edit`), and a project inside a protected path is handled like any protected path inside a project:
+
+- **The Edit/Write tools ask for every write** in the project, even in auto mode.
+- **Bash can still write, rename and delete** in the project, as in any project: the project is open to Bash by default.
+
+To edit freely there, grant the project folder itself: `guard allow . --access edit` (from inside the project) stops the prompts. The trade-off is that Bash then becomes read-only in the project.
 
 ### Granting while you are in a Claude session
 
@@ -238,7 +249,7 @@ Hooks, environment variables, the status line, MCP servers, plugins and permissi
    guard review
    ```
 
-   For each pending proposal you see the diff against the file **as it is now**, and a plain-English note for each security-relevant change. For example: *"adds a hook that runs `./x.sh` before every Bash command, outside the sandbox"*. Changes to entries `guard` manages are refused, with a pointer to `guard allow` or `guard edit`.
+   For each pending proposal you see the diff against the file **as it is now**, and a plain-English note for each security-relevant change. For example: *"adds a hook that runs `./x.sh` on PreToolUse (Bash), outside the sandbox"*. Changes to entries `guard` manages are refused, with a pointer to `guard allow` or `guard edit`.
 
 3. **You accept or reject each one.** On accept, `guard` backs up the file, writes it, deletes the proposal, and re-applies the policy, so any newly referenced script becomes protected.
 
@@ -420,7 +431,7 @@ Concrete paths in deny rules (`//abs`, `~/`) stop both the file tools and Bash. 
 2. resolve the path (symlinks, `..`; Windows drive paths case-insensitively);
 3. locked, ceiling `deny`, or a `protect` glob → deny;
 4. protected → if a grant opens it, go on to step 5; otherwise **ask** inside the project and **deny** outside it;
-5. inside a grant (the most specific wins) → by access level: `modify` refuses Write, `bash` counts as closed, the rest leave it to the rules;
+5. inside a grant (the most specific wins) → by access level: `deny` refuses, `modify` refuses Write, `bash` counts as closed, the rest leave it to the rules;
 6. inside the project → no opinion;
 7. anywhere else (closed) → **ask** (baseline) or **deny** (`strict`).
 
@@ -448,6 +459,7 @@ It never allows anything, so it can only tighten. It is fail-closed: if it crash
 - **MCP tools.** They are neither sandboxed nor seen by the hook.
 - **Command rules are text matching.** `confirm-destructive` and `git-destructive` can be sidestepped by rephrasing. They are a guardrail; the sandbox is the wall.
 - **Projects without a section in the policy.** A protected path inside such a project can be written by Bash: the project is open by default, and `guard` writes sandbox entries only into files it manages. Claude Code itself still keeps Bash out of the project's `.claude/`, `.mcp.json` and dotfiles, and the Edit/Write tools are still asked.
+- **Projects that live on a Windows drive.** Bash can write and delete anywhere in the project, despite the drive's `edit` ceiling ([details](#a-project-on-a-windows-drive)).
 - **`.env` files in the project** are readable through Bash (a deliberate choice; see [Troubleshooting](#troubleshooting)).
 - **A determined user.** On WSL you can write the managed settings yourself. They guard against mistakes and project overrides, not against you.
 - **Platforms.** Verified on WSL2 only.

@@ -241,3 +241,25 @@ def test_a_sibling_with_a_common_prefix_is_not_inside(world):
     sibling = out.parent / (out.name + "2")
     data = data_for(BASE + f'write = [{{ path = "{out}", access = "full" }}]\n', plat)
     assert call(data, sibling / "f.txt", project=proj) == "ask"
+
+
+def test_a_project_on_a_protected_drive(tmp_path: Path):
+    """README "A project on a Windows drive": every Edit/Write asks, until the project folder
+    itself is granted (then Bash is read-only there)."""
+    home = tmp_path / "home"
+    drive = tmp_path / "mnt" / "d"
+    proj = drive / "repos" / "x"
+    (proj / ".git").mkdir(parents=True)
+    plat = Platform(
+        home=home,
+        guard_home=home / ".config" / "claude-guard",
+        hook_command=("/g",),
+        drives=(drive,),
+    )
+    base = '[everywhere]\nclosed = "ask"\nprotected = [{ path = "{drives}", ceiling = "edit" }]\n'
+    assert call(data_for(base, plat), proj / "a.py", project=proj) == "ask"
+    granted = base + f'[projects."{proj}"]\nwrite = [{{ path = "{proj}", access = "edit" }}]\n'
+    assert call(data_for(granted, plat), proj / "a.py", project=proj) is None
+    c = compile_policy(resolve(parse_policy("version = 1\n" + granted), plat), plat)
+    local = c.files[proj / ".claude" / "settings.local.json"]
+    assert any(e.path == "sandbox.filesystem.denyWrite" and e.value == str(proj) for e in local)
