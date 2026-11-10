@@ -15,7 +15,7 @@ from typing import Any
 from ..applied import load_applied
 from ..context import Ctx
 from ..effective import Effective
-from ..hook import decide, within
+from ..hook import decide, memory_dirs, within
 from ..rules import bash_match, glob_matches, has_glob
 
 _RULE = re.compile(r"^(\w+)\((.*)\)$", re.DOTALL)
@@ -134,6 +134,11 @@ def explain_path(ctx: Ctx, raw: str) -> Explanation:
         tools.verdict = "allowed without a prompt"
     elif in_project:
         tools.verdict = "allowed: inside the project (default mode may still prompt)"
+    elif hook is None and any(
+        within(str(path), m)
+        for m in memory_dirs(str(home), [str(r) for r in (project, ctx.cwd) if r])
+    ):
+        tools.verdict = "allowed: the session's own memory folder (default mode may still prompt)"
     else:
         tools.verdict = "no rule: auto mode writes without a prompt; default mode prompts"
 

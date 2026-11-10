@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -505,3 +506,15 @@ def test_explain_knows_the_builtin_protection_of_project_settings(g: Runner):
     g.ok("init")
     out = g.ok("explain", str(g.proj / ".claude" / "skills" / "s.md"))
     assert "BLOCKED" in out and "built-in" in out
+
+
+def test_explain_the_session_s_memory_folder(g: Runner, monkeypatch):
+    """The hook leaves the session's own auto-memory folder open (VB-E11); other projects' stay
+    closed."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    g.ok("init")
+    projects = g.home / ".claude" / "projects"
+    own = projects / re.sub(r"[^A-Za-z0-9]", "-", str(g.proj)) / "memory" / "MEMORY.md"
+    assert "the session's own memory folder" in g.ok("explain", str(own))
+    other = projects / "-somewhere-else" / "memory" / "MEMORY.md"
+    assert "ASKS" in g.ok("explain", str(other))

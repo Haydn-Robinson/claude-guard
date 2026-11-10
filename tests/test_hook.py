@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -263,3 +264,86 @@ def test_a_project_on_a_protected_drive(tmp_path: Path):
     c = compile_policy(resolve(parse_policy("version = 1\n" + granted), plat), plat)
     local = c.files[proj / ".claude" / "settings.local.json"]
     assert any(e.path == "sandbox.filesystem.denyWrite" and e.value == str(proj) for e in local)
+
+
+# ---- the session's own auto-memory folder (VB-E11) -------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_config_dir_override(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
+def memory_of(home: Path, root: Path) -> Path:
+    return home / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root)) / "memory"
+
+
+def test_own_memory_folder_is_open_even_when_strict(world):
+    home, proj, _out, plat = world
+    mem = memory_of(home, proj)
+    for text in (BASE, '[everywhere]\nclosed = "deny"\n'):
+        data = data_for(text, plat)
+        assert call(data, mem / "MEMORY.md", project=proj) is None
+        assert call(data, mem / "user-role.md", tool="Edit", project=proj) is None
+
+
+def test_memory_folder_follows_the_git_root_from_a_subfolder(world):
+    home, proj, _out, plat = world
+    assert call(data_for(BASE, plat), memory_of(home, proj) / "a.md", project=proj / "sub") is None
+
+
+def test_memory_folder_name_replaces_every_non_alphanumeric(world):
+    home, _proj, _out, plat = world
+    odd = home / "repos" / "my_app.v2 x"
+    (odd / ".git").mkdir(parents=True)
+    name = memory_of(home, home).parent.name + "-repos-my-app-v2-x"
+    mem = home / ".claude" / "projects" / name / "memory"
+    assert call(data_for(BASE, plat), mem / "a.md", project=odd) is None
+
+
+def test_other_memory_and_transcripts_stay_closed(world):
+    home, proj, _out, plat = world
+    other = home / "repos" / "q"
+    (other / ".git").mkdir(parents=True)
+    data = data_for(BASE, plat)
+    assert call(data, memory_of(home, other) / "a.md", project=proj) == "ask"
+    assert call(data, memory_of(home, proj).parent / "s.jsonl", project=proj) == "ask"
+    assert call(data, memory_of(home, proj).parent / "memory2" / "a.md", project=proj) == "ask"
+
+
+def test_memory_folder_of_a_session_started_at_home(world):
+    """Home is no project, but a session started there still has its own memory folder."""
+    home, _proj, _out, plat = world
+    assert call(data_for(BASE, plat), memory_of(home, home) / "a.md", project=home) is None
+
+
+def test_memory_folder_of_a_worktree_is_the_main_repo_s(world):
+    home, proj, _out, plat = world
+    wt = proj / ".claude" / "worktrees" / "feat"
+    wt.mkdir(parents=True)
+    gitdir = proj / ".git" / "worktrees" / "feat"
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n")
+    (wt / ".git").write_text(f"gitdir: {gitdir}\n")
+    data = data_for(BASE, plat)
+    assert call(data, memory_of(home, proj) / "a.md", project=wt) is None
+    assert call(data, memory_of(home, wt) / "a.md", project=wt) is None  # either name
+
+
+def test_memory_folder_respects_claude_config_dir(world, monkeypatch, tmp_path: Path):
+    home, proj, _out, plat = world
+    cfg = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    data = data_for(BASE, plat)
+    rel = memory_of(home, proj).relative_to(home / ".claude")
+    assert call(data, cfg / rel / "a.md", project=proj) is None
+    assert call(data, memory_of(home, proj) / "a.md", project=proj) == "ask"
+
+
+def test_memory_folder_can_still_be_locked_or_protected(world):
+    home, proj, _out, plat = world
+    mem = memory_of(home, proj)
+    prot = data_for(BASE + 'protected = [{ path = "~/.claude/projects", ceiling = "ask" }]\n', plat)
+    assert call(prot, mem / "a.md", project=proj) == "ask"
+    locked = data_for(BASE + 'locked = ["~/.claude/projects/"]\n', plat)
+    assert call(locked, mem / "a.md", project=proj) == "deny"

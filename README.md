@@ -53,7 +53,7 @@ Install it as a tool rather than running it from a checkout. The hook is registe
 
 | Category | What | Default |
 |---|---|---|
-| **Open** | Reads anywhere, except secrets. Writes in the current project, in `$TMPDIR` and in tool caches | allowed, no prompt |
+| **Open** | Reads anywhere, except secrets. Writes in the current project, in `$TMPDIR`, in tool caches, and (Edit/Write tools only) in the session's own memory folder `~/.claude/projects/<project>/memory/` | allowed, no prompt |
 | **Closed** | Writes anywhere else | Bash: read-only. Edit/Write tools: **ask** |
 | **Protected** | Windows drives and system folders, `/etc`, credentials, shell startup files, scripts that Claude Code settings run | Bash: read-only (with [exceptions](#what-this-protects-against-and-what-it-does-not) inside projects). Edit/Write tools: **refused** outside the project, **asked** inside it |
 
@@ -434,7 +434,7 @@ Concrete paths in deny rules (`//abs`, `~/`) stop both the file tools and Bash. 
 3. locked, ceiling `deny`, or a `protect` glob → deny;
 4. protected → if a grant opens it, go on to step 5; otherwise **ask** inside the project and **deny** outside it;
 5. inside a grant (the most specific wins) → by access level: `deny` refuses, `modify` refuses Write, `bash` counts as closed, the rest leave it to the rules;
-6. inside the project → no opinion;
+6. inside the project, or the session's own memory folder (so Claude saves memories without asking) → no opinion;
 7. anywhere else (closed) → **ask** (baseline) or **deny** (`strict`).
 
 It never allows anything, so it can only tighten. It is fail-closed: if it crashes, the write is blocked. It logs each decision to `hook.log`, because the prompt does not show its reason. It enforces what was last **applied**, read from `applied.json`, not unapplied edits to `policy.toml`. The project is the git root containing the folder Claude was started in.

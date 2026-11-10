@@ -15,8 +15,13 @@ not an unapplied policy edit), and decides, first match wins:
    grant; else inside the project -> ask; else deny;
 5. inside a grant (the most specific wins): ``modify`` refuses Write; ``deny`` refuses; ``bash``
    counts as closed; otherwise no opinion (the rules apply, so ``ask`` still prompts);
-6. inside the project -> no opinion;
+6. inside the project, or the session's own auto-memory folder -> no opinion;
 7. closed -> ask, or deny with ``closed = "deny"``.
+
+The memory folder (``~/.claude/projects/<project>/memory/``) counts as part of the project: Claude
+Code writes memories there on its own, and a hook ``ask`` would prompt for every one, since "always
+allow for this session" does not bypass it (VB-E10, VB-E11). Only this session's folder opens, not
+other projects' memories or transcripts. Locking or protecting ``~/.claude/projects`` still works.
 
 It never allows, so it cannot widen anything. Registered with ``onFailure: "block"`` (VB-H3), so a
 crash blocks the write. Decisions go to ``hook.log``, since the prompt does not show the reason
@@ -57,6 +62,36 @@ def within(path: str, folder: str) -> bool:
 
 def _matches(pattern: str, path: str) -> bool:
     return glob_matches(_key(pattern), Path(_key(path)))
+
+
+def _main_worktree(root: Path) -> Path | None:
+    """The main repository of a linked worktree (``.git`` is a file pointing at its gitdir)."""
+    try:
+        text = (root / ".git").read_text(encoding="utf-8")
+        gitdir = Path(text.removeprefix("gitdir:").strip())
+        gitdir = gitdir if gitdir.is_absolute() else root / gitdir
+        common = gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()
+    except OSError, UnicodeDecodeError:
+        return None  # not a linked worktree: .git is a folder, or unreadable
+    common = Path(os.path.realpath(common))
+    return common.parent if common.name == ".git" else None
+
+
+def memory_dirs(home: str, roots: list[str]) -> list[str]:
+    """The auto-memory folders of a session whose project is any of ``roots`` (VB-E11): under the
+    Claude config folder, named after the folder path with every non-alphanumeric character
+    replaced by ``-``. A worktree's memory is its main repository's. Very long paths, which Claude
+    Code shortens, do not match: those writes stay closed (fail safe)."""
+    config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")
+    base = os.path.join(os.path.realpath(config), "projects")
+    out: list[str] = []
+    for r in roots:
+        main = _main_worktree(Path(r))
+        for folder in (r, str(main)) if main else (r,):
+            d = os.path.join(base, re.sub(r"[^A-Za-z0-9]", "-", folder), "memory")
+            if d not in out:
+                out.append(d)
+    return out
 
 
 def _resolve(raw: str, cwd: str | None) -> str:
@@ -123,7 +158,10 @@ def decide(
                 if _matches(g["path"].rstrip("/") + "/" + glob, path):
                     return Decision("deny", f"{path} is protected by {glob!r} in {g['path']}")
 
-    in_project = project is not None and within(path, project)
+    roots = [r for r in (project, os.path.realpath(start) if start else None) if r]
+    in_project = (project is not None and within(path, project)) or any(
+        within(path, m) for m in memory_dirs(home, roots)
+    )
     prot = _innermost([p for p in protected if p["ceiling"] != "deny"], path)
     candidates = grants
     if prot is not None:

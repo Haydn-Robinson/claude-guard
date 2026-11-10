@@ -240,12 +240,14 @@ Each error names both entries and why one cannot win.
    - inside the project → **ask**;
    - otherwise → **deny**.
 5. Inside a grant in scope (the most specific wins) → by access level: `modify` and tool `Write` → **deny**; `bash` → treat as closed (step 7); otherwise **no opinion** (the rules apply, so `ask` still prompts).
-6. Inside the project → **no opinion**.
+6. Inside the project, or the session's own auto-memory folder (`~/.claude/projects/<project>/memory/`) → **no opinion**.
 7. Closed → **ask** (baseline) or **deny** (`strict`).
 
 It never allows, so it cannot widen anything. It is registered with `onFailure: "block"` (fail-closed, VB-H3), and it logs each decision to `hook.log`, because the prompt does not show the hook's reason (VB-E7).
 
 **The project root.** `CLAUDE_PROJECT_DIR` is set in every hook call, and it is the folder Claude was started in, not the repo root (VB-H7). Since a session started in a sub-folder also applies the repo root's settings (VB-P5), the hook takes as the project **the git root containing `CLAUDE_PROJECT_DIR`**, or `CLAUDE_PROJECT_DIR` itself outside a repo (falling back to the payload `cwd` if it is unset). Whether Bash can write in the whole repo in that case, or only the launch folder, is open (VB-U15); `explain` gives the cautious answer. A project root at or above `$HOME` counts as no project, so starting Claude in `~` does not open your whole home folder.
+
+**The memory folder.** Claude Code writes memories with the Write/Edit tools to `~/.claude/projects/<name>/memory/`, `<name>` being the project path with every non-alphanumeric character replaced by `-` (VB-E11). Left closed, every memory prompts, and "always allow for this session" does not help (VB-E10). So the hook treats this session's memory folder (for the project root and the launch folder, and a worktree's main repository) as part of the project. Other projects' memories and the transcripts beside them stay closed, since memories are loaded into later sessions. `CLAUDE_CONFIG_DIR` is honoured. A name Claude Code shortens (very long paths) does not match and stays closed. Locking or protecting `~/.claude/projects` overrides this, as for any project path. Bash cannot write there: Claude Code's own sandbox keeps `~/.claude/projects` read-only.
 
 The matcher stays `Write|Edit|MultiEdit|NotebookEdit`: NotebookEdit reaches the hook, and MultiEdit no longer exists, which is harmless (VB-H8).
 

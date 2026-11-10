@@ -203,6 +203,12 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Evidence:** P2-D steps 12 to 15, with `hook.log` timestamps.
 **Relied on by:** the design's `ask` access level and `ask` ceilings: every change needs its own approval.
 
+### VB-E11 Auto-memory is written with the Write/Edit tools to `~/.claude/projects/<project>/memory/`
+**Status:** VERIFIED (the folder, the tool and the folder name for plain paths); DOCUMENTED (worktrees share the main repository's folder; `CLAUDE_CONFIG_DIR` moves `~/.claude`)
+**Fact:** Claude Code saves memories with the Write tool (and Edit for `MEMORY.md`), so they pass through the Edit/Write hook. The folder is `<config>/projects/<name>/memory/`, where `<name>` is the project's folder path with every non-alphanumeric character replaced by `-` (`/home/u/Repositories/claude-guard` → `-home-u-Repositories-claude-guard`; a session started in the home folder gets `-home-u`). Before this fact was handled, the hook's `ask` prompted for every memory, and "always allow for this session" did not stop it (VB-E10). Not checked: how Claude Code shortens very long names, and the `autoMemoryDirectory` setting.
+**Evidence:** `hook.log` from a real session on 2026-11-10 (Claude Code 2.1.321): three `ask` lines for Write to `~/.claude/projects/-home-<user>-Repositories-<repo>/memory/*.md`; the user reported the repeated prompts. Folder names in `~/.claude/projects/` for repos named with `-`.
+**Relied on by:** `hook.memory_dirs`: the session's own memory folder counts as part of the project (no opinion); `views/explain`.
+
 ---
 
 ## C. The auto-mode classifier and other prompts
@@ -388,6 +394,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 | VB-R1, R2 | T4 | same |
 | VB-H1 to H3 with the real registration, E5 | `hook-verify.md` | its own setup and cleanup |
 | VB-S4, S13 to S16, E7, E9, E10, H7, H8, P5 to P7, R1 (ask), and the resolved U3 to U7, U9 | `phase2-verification.md` sessions A to G | `scripts/phase2/setup.sh [windows dir]`, `reload.sh`, `cleanup.sh` |
+| VB-E11 | in a session, ask Claude to remember something; check `hook.log` for a `pass` line on `~/.claude/projects/<name>/memory/` and that no prompt appeared | none |
 | VB-S17 | re-run the read-only probes listed in its Evidence, from a sandboxed Bash call | none |
 | VB-U5 (`allowUnsandboxedCommands`), U14, U15, U17 | not yet written | a short follow-up: G2 in default mode; a session in a repo sub-folder writing to the repo root; a grant containing a `.claude/` folder |
 
@@ -414,6 +421,7 @@ v2 design (`design.md`):
 | Locked settings files | VB-E5, E9, S14, S15, U17 |
 | Secrets | VB-S13, S14 |
 | Hook project root | VB-H7, P5, U15 |
+| Session memory folder open to the file tools | VB-E11, E10 |
 | No restart after apply | VB-S6 |
 | `guard review` in a separate terminal | VB-P7 |
 | `baseline` lock settings | VB-P6, U5 |
