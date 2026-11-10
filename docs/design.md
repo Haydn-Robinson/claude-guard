@@ -210,7 +210,7 @@ Deliberately **not** in the baseline:
 - Text rules like `Bash(rm -rf /)`. They are trivially rephrased and give false confidence; the sandbox is what stops this.
 - Project `.claude/` folders other than the settings files, so editing skills, agents and commands in a project stays frictionless. The file tools write there with no prompt (VB-E9). Bash cannot (VB-S15), so a script that generates skill files has to be run by you, or Claude writes them with the file tools.
 
-Other shipped presets: `confirm-destructive` (`commands.ask` for `rm`, `rmdir`, `unlink`, `shred`), `git-destructive` (`commands.ask` for history-destroying git commands, with their common variants), `strict` (hook `deny` instead of `ask` for closed paths; see section 14 for hardening ideas).
+Other shipped presets: `confirm-destructive` (`commands.ask` for `rm`, `rmdir`, `unlink`, `shred`), `git-destructive` (`commands.ask` for the git commands git cannot undo: discarding uncommitted work, `clean`, `stash drop`/`clear`, `reflog expire`; pushes are left to branch protection on the remote, and reflog-recoverable commands are not asked), `strict` (hook `deny` instead of `ask` for closed paths; see section 14 for hardening ideas).
 
 ### 7.3 Rule and path forms
 

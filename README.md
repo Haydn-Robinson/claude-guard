@@ -208,7 +208,9 @@ guard edit
 presets = ["baseline", "confirm-destructive", "git-destructive"]
 ```
 
-On save, `guard edit` validates the file, then shows the diff and asks. `confirm-destructive` makes `rm`, `rmdir`, `unlink` and `shred` ask; `git-destructive` does the same for history-destroying git commands (`reset --hard`, `clean`, `push --force`, `branch -D`, `rebase`, ...). These match command text, so they are a guardrail; the sandbox is what limits where a delete can land.
+On save, `guard edit` validates the file, then shows the diff and asks. `confirm-destructive` makes `rm`, `rmdir`, `unlink` and `shred` ask; `git-destructive` does the same for the git commands whose damage git cannot undo: discarding uncommitted work (`reset --hard`, `checkout -- .`, `restore`, `stash drop`/`clear`), deleting untracked and ignored files such as `.env` (`clean`), and `reflog expire`. Rebases, amends and `branch -D` stay prompt-free, since the reflog can undo them; protect pushes with branch protection on the remote. These rules match command text, so they are a guardrail; the sandbox is what limits where a delete can land.
+
+**Inside the project, guard does not stop deletion.** Bash can write and delete anywhere in the project, so it is your workspace, and git is its safety net: commit often and push, since a remote is the only backup of `.git` itself. For a granted folder whose contents matter, prefer `--access edit` to `full`.
 
 ### A project on a Windows drive
 

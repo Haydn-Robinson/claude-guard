@@ -18,13 +18,13 @@ Evidence names: **A, B, C, D** = `phase0-sandbox-tests.md` sessions; **E, F** = 
 
 | | |
 |---|---|
-| Claude Code | 2.1.319 (phase 0, 0b, HV); 2.1.321 (phase 2) |
+| Claude Code | 2.1.319 (phase 0, 0b, HV); 2.1.321 (phase 2, VB-S17) |
 | Platform | WSL2 (Linux 6.18.54.1-microsoft-standard-WSL2), shell zsh |
 | Sandbox | native (bubblewrap 0.6.1, socat installed) |
 | Filesystems | WSL home (ext4); `/mnt/d` and `/mnt/c` (drvfs / 9p) |
 | Permission modes | mostly **auto**; **default** and **acceptEdits** where stated |
 | IDE | VS Code connected during phase 2 (affects how approval prompts show diffs) |
-| Date | 2026-11-08 (phase 0 to HV); 2026-11-09 (phase 2) |
+| Date | 2026-11-08 (phase 0 to HV); 2026-11-09 (phase 2); 2026-11-10 (VB-S17) |
 
 ## When to re-verify
 
@@ -133,6 +133,12 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 **Fact:** With the sandbox on, cache folders outside the project are read-only, so tools that need them fail: `uv sync` failed with `Could not acquire lock ... Read-only file system (os error 30)` in the uv cache. Cache locations come from each tool's configuration (`uv cache dir`, `npm config get cache`, `$XDG_CACHE_HOME`), not a fixed `~/.cache`.
 **Evidence:** P2-A cache steps and `uv sync`.
 **Relied on by:** the `baseline` preset opens each tool's configured cache folder.
+
+### VB-S17 Sandboxed Bash cannot reach processes outside the sandbox
+**Status:** VERIFIED (read-only probes; no write outside the sandbox was attempted)
+**Fact:** Inside the sandbox, `socket(AF_UNIX, ...)` fails with `Operation not permitted` (TCP sockets are allowed, through the network proxy). So nothing that works by talking to a running process over a Unix socket can be used to act outside the sandbox: Docker, `systemctl --user`/`systemd-run --user` (reported `offline`), `tmux`/`screen` servers, the VS Code `code` CLI, SSH agents. On WSL, launching a Windows program (`cmd.exe /c ver`) fails with `UtilBindVsockAnyPort: socket failed 1`, so `cmd.exe`/`powershell.exe` interop cannot run Windows processes, which the Linux sandbox would not confine. Not tested: `ssh` to a TCP port on localhost (no key is readable: `~/.ssh` is hidden by the baseline, VB-S13).
+**Evidence:** 2026-11-10 session probes: Python `socket.socket(AF_UNIX)` / `AF_INET`; `cmd.exe /c ver`; `tmux ls`; `systemctl --user is-system-running`.
+**Relied on by:** the threat model (design section 1): a command cannot escape the sandbox's write confinement by handing the work to another process. Re-check after a Claude Code upgrade, and on any new platform.
 
 ---
 
@@ -382,6 +388,7 @@ Re-run the relevant runbook when: Claude Code is upgraded to a new minor version
 | VB-R1, R2 | T4 | same |
 | VB-H1 to H3 with the real registration, E5 | `hook-verify.md` | its own setup and cleanup |
 | VB-S4, S13 to S16, E7, E9, E10, H7, H8, P5 to P7, R1 (ask), and the resolved U3 to U7, U9 | `phase2-verification.md` sessions A to G | `scripts/phase2/setup.sh [windows dir]`, `reload.sh`, `cleanup.sh` |
+| VB-S17 | re-run the read-only probes listed in its Evidence, from a sandboxed Bash call | none |
 | VB-U5 (`allowUnsandboxedCommands`), U14, U15, U17 | not yet written | a short follow-up: G2 in default mode; a session in a repo sub-folder writing to the repo root; a grant containing a `.claude/` folder |
 
 ## What each tool feature rests on

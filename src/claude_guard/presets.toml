@@ -90,21 +90,21 @@ commands.deny = ["sudo *"]
 [confirm-destructive]
 commands.ask = ["rm *", "rmdir *", "unlink *", "shred *"]
 
+# Ask before git commands whose damage git cannot undo: discarding uncommitted work, deleting
+# ignored and untracked files (.env, local data), and expiring the reflog (which is what makes
+# commits unrecoverable). Not included: pushes, which branch protection on the remote handles, and
+# rebase, amend and branch -D, which the reflog can undo. `git restore --staged` prompts as well:
+# a prefix rule cannot make an exception for it, since ask beats allow.
 [git-destructive]
 commands.ask = [
   "git reset --hard *",
-  "git clean *",
   "git checkout -- *",
   "git checkout . *",
   "git restore *",
-  "git push --force *",
-  "git push -f *",
-  "git push --force-with-lease *",
-  "git branch -D *",
+  "git clean *",
   "git stash drop *",
   "git stash clear *",
-  "git rebase *",
-  "git filter-branch *",
+  "git reflog expire *",
 ]
 
 # The hook refuses (instead of asking about) Edit/Write outside the project and every grant.

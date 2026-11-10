@@ -399,3 +399,36 @@ def test_edits_are_validated():
     with pytest.raises(PolicyError):
         pf.add_grant(None, "relative/path", Access.FULL)
     assert parse_policy(pf.text).everywhere.write[0].path == "~/notes"  # unchanged
+
+
+def test_git_destructive_covers_what_git_cannot_recover():
+    """Prompts only where data is lost for good: uncommitted work, ignored and untracked files,
+    and the reflog. Pushes are the remote's job (branch protection); rebase, amend and branch
+    deletion are recoverable from the reflog, so they run without a prompt. Known cost: `git
+    restore --staged` (harmless) prompts too, as prefix rules cannot except it and ask beats allow."""
+    from claude_guard.rules import bash_match
+
+    ask = shipped_presets()["git-destructive"].commands.ask
+    asked = lambda cmd: any(bash_match(p, cmd) for p in ask)
+    for cmd in [
+        "git reset --hard",
+        "git reset --hard HEAD~1",
+        "git checkout -- .",
+        "git checkout .",
+        "git restore src/a.py",
+        "git clean -fdx",
+        "git stash drop",
+        "git stash clear",
+        "git reflog expire --expire=now --all",
+    ]:
+        assert asked(cmd), cmd
+    for cmd in [
+        "git push --force origin main",
+        "git rebase main",
+        "git branch -D old",
+        "git commit --amend",
+        "git checkout main",
+        "git reset HEAD~1",
+        "git gc --prune=now",  # objects the reflog holds survive; expiring it is what destroys
+    ]:
+        assert not asked(cmd), cmd
