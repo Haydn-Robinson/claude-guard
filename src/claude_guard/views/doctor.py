@@ -34,7 +34,7 @@ def _claude_writable(built: Built, ctx: Ctx) -> list[str]:
             str(g.path) for g in view.grants if g.access.tools == "allow" or g.access.bash_writes
         ]
         out += list(view.raw.allow_write)
-    out.append(f"/tmp/claude-{os.getuid()}")
+    out.append(str(ctx.claude_tmp))
     return out
 
 

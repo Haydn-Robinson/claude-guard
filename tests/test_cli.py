@@ -62,6 +62,7 @@ class Runner:
             which=lambda t: f"/usr/bin/{t}",
             wsl=False,
             queue=[self.queue],
+            claude_tmp=self.tmp / "claude-tmp",
         )
         out, err = io.StringIO(), io.StringIO()
         env = Env(

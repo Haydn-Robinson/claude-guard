@@ -34,6 +34,8 @@ class Ctx:
     which: Callable[[str], str | None] = shutil.which
     wsl: bool | None = None  # None: detect
     queue: list[Path] | None = None  # where proposals wait (default: proposals.proposal_dirs())
+    # Claude Code's $TMPDIR, writable by sandboxed Bash (VB-S4)
+    claude_tmp: Path = field(default_factory=lambda: Path(f"/tmp/claude-{os.getuid()}"))
     _hook: tuple[str, ...] | None = field(default=None, repr=False)
 
     @property

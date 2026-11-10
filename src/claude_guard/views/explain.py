@@ -172,7 +172,7 @@ def explain_path(ctx: Ctx, raw: str) -> Explanation:
             for effect, rule, pat, src in rules
             if effect == "allow" and _concrete(pat)
         ]
-        tmp = f"/tmp/claude-{os.getuid()}"
+        tmp = str(ctx.claude_tmp)
         if in_project:
             writable.append(Finding("write", "sandbox", f"inside the project {project}"))
         if within(str(path), tmp):
